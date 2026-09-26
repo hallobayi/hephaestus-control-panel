@@ -1478,8 +1478,8 @@ watch(selectedConnectionId, () => {
       </div>
     </Transition>
 
-    <!-- Main Content Container -->
-    <main class="max-w-[1600px] mx-auto p-4 sm:p-6 space-y-6">
+    <!-- Main Content Container (Full Width without excess margins) -->
+    <main class="w-full px-4 sm:px-6 py-6 space-y-6">
 
       <!-- Page Header (Strict AGENTS.md: pure clean text h1, no icons, no badges) -->
       <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 dark:border-[#1b2234] pb-4">
@@ -1767,6 +1767,7 @@ watch(selectedConnectionId, () => {
                 <tr>
                   <th class="py-3 px-4">State</th>
                   <th class="py-3 px-4">Container Name</th>
+                  <th class="py-3 px-4">Visibility</th>
                   <th class="py-3 px-4">Image</th>
                   <th class="py-3 px-4">Network & IP</th>
                   <th class="py-3 px-4">Ports</th>
@@ -1776,14 +1777,14 @@ watch(selectedConnectionId, () => {
               </thead>
               <tbody class="divide-y divide-slate-100 dark:divide-[#1b2234]">
                 <tr v-if="loading" class="text-center">
-                  <td colspan="7" class="py-12 text-slate-500">
+                  <td colspan="8" class="py-12 text-slate-500">
                     <RefreshCw class="w-5 h-5 animate-spin mx-auto mb-2 text-slate-400" />
                     <span>Loading containers...</span>
                   </td>
                 </tr>
 
                 <tr v-else-if="filteredContainers.length === 0" class="text-center">
-                  <td colspan="7" class="py-12 text-slate-500">
+                  <td colspan="8" class="py-12 text-slate-500">
                     <Boxes class="w-8 h-8 text-slate-400 mx-auto mb-2 opacity-50" />
                     <p class="font-bold text-slate-700 dark:text-slate-300">No containers found</p>
                     <p class="text-xs text-slate-400 mt-1">Deploy a new container or change filter parameters.</p>
@@ -1819,41 +1820,11 @@ watch(selectedConnectionId, () => {
                     </div>
                   </td>
 
-                  <!-- Name & Short ID & Visibility Badge -->
+                  <!-- Container Name -->
                   <td class="py-3 px-4">
-                    <div class="flex items-center gap-2">
-                      <span class="font-bold text-slate-900 dark:text-white">
-                        {{ getCleanContainerName(c) }}
-                      </span>
-                      <!-- Visibility & Share Badge -->
-                      <span
-                        v-if="!c.isOwner && !isAdmin && (c.userPermission === 'read' || c.userPermission === 'manage')"
-                        class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 font-mono"
-                        :title="c.userPermission === 'manage' ? 'Shared with you: Full Control (Manage)' : 'Shared with you: Read Only'"
-                      >
-                        <Share2 class="w-2.5 h-2.5" />
-                        <span>{{ c.userPermission === 'manage' ? 'Shared (Manage)' : 'Shared (Read Only)' }}</span>
-                      </span>
-                      <span
-                        v-else-if="c.visibility === 'private'"
-                        class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 font-mono"
-                        :title="c.sharesCount && c.sharesCount > 0 ? `Private (Shared with ${c.sharesCount} user(s))` : 'Private: Visible only to creator and administrators'"
-                      >
-                        <Lock class="w-2.5 h-2.5" />
-                        <span>Private</span>
-                        <span v-if="c.sharesCount && c.sharesCount > 0" class="text-[9px] opacity-80">
-                          &bull; {{ c.sharesCount }} shared
-                        </span>
-                      </span>
-                      <span
-                        v-else
-                        class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-100 dark:bg-[#141824] text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-[#1b2234] font-mono"
-                        title="Public: Visible to all authorized users"
-                      >
-                        <Globe class="w-2.5 h-2.5 text-slate-400" />
-                        <span>Public</span>
-                      </span>
-                    </div>
+                    <span class="font-bold text-slate-900 dark:text-white">
+                      {{ getCleanContainerName(c) }}
+                    </span>
 
                     <div class="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
                       <div class="flex items-center gap-1">
@@ -1874,8 +1845,44 @@ watch(selectedConnectionId, () => {
                     </div>
                   </td>
 
+                  <!-- Visibility / Access Column -->
+                  <td class="py-3 px-4 whitespace-nowrap">
+                    <!-- Case 1: Shared with current user (not owner) -->
+                    <span
+                      v-if="!c.isOwner && !isAdmin && (c.userPermission === 'read' || c.userPermission === 'manage')"
+                      class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 font-mono"
+                      :title="c.userPermission === 'manage' ? 'Shared with you: Full Control (Manage)' : 'Shared with you: Read Only'"
+                    >
+                      <Share2 class="w-2.5 h-2.5" />
+                      <span>{{ c.userPermission === 'manage' ? 'Shared (Manage)' : 'Shared (Read Only)' }}</span>
+                    </span>
+
+                    <!-- Case 2: Private Container (Owner or Admin) -->
+                    <span
+                      v-else-if="c.visibility === 'private'"
+                      class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 font-mono"
+                      :title="c.sharesCount && c.sharesCount > 0 ? `Private (Shared with ${c.sharesCount} user(s))` : 'Private: Visible only to creator and administrators'"
+                    >
+                      <Lock class="w-2.5 h-2.5" />
+                      <span>Private</span>
+                      <span v-if="c.sharesCount && c.sharesCount > 0" class="text-[9px] opacity-80 font-normal">
+                        &bull; {{ c.sharesCount }} shared
+                      </span>
+                    </span>
+
+                    <!-- Case 3: Public Container -->
+                    <span
+                      v-else
+                      class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 dark:bg-[#141824] text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-[#1b2234] font-mono"
+                      title="Public: Visible to all authorized users"
+                    >
+                      <Globe class="w-2.5 h-2.5 text-slate-400" />
+                      <span>Public</span>
+                    </span>
+                  </td>
+
                   <!-- Image -->
-                  <td class="py-3 px-4 font-mono text-[11px] text-slate-700 dark:text-slate-300 max-w-[200px] truncate" :title="c.image">
+                  <td class="py-3 px-4 font-mono text-[11px] text-slate-700 dark:text-slate-300 max-w-[280px] truncate" :title="c.image">
                     {{ c.image }}
                   </td>
 
