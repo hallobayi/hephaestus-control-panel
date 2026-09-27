@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import axios from 'axios';
+import { useAuthStore } from '../stores/auth';
 import {
   Link2,
   Plus,
@@ -21,6 +22,8 @@ import {
 } from 'lucide-vue-next';
 
 const router = useRouter();
+const authStore = useAuthStore();
+const canManage = computed(() => authStore.can('connections', 'manage'));
 
 interface RegistryItem {
   id: string;
@@ -862,17 +865,34 @@ onMounted(() => {
       <div class="lg:col-span-5 p-5 bg-white dark:bg-[#0e121c] border border-slate-200 dark:border-[#1b2234] rounded-xl space-y-4 shadow-sm">
         <div class="flex items-center justify-between border-b border-slate-200 dark:border-[#1b2234] pb-3">
           <h2 class="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-1.5">
-            <Pencil v-if="editingId" class="w-3.5 h-3.5 text-blue-600 dark:text-[#95CCDD]" />
+            <Eye v-if="!canManage" class="w-3.5 h-3.5 text-slate-400" />
+            <Pencil v-else-if="editingId" class="w-3.5 h-3.5 text-blue-600 dark:text-[#95CCDD]" />
             <Plus v-else class="w-3.5 h-3.5 text-blue-600 dark:text-[#95CCDD]" />
-            <span>{{ editingId ? `Edit Connection: ${form.name}` : 'Register Service Endpoint' }}</span>
+            <span>{{ editingId ? (!canManage ? `Connection Details: ${form.name}` : `Edit Connection: ${form.name}`) : (!canManage ? 'Connection Inspector' : 'Register Service Endpoint') }}</span>
           </h2>
 
-          <span v-if="editingId" class="px-2 py-0.5 rounded bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-500/30 text-[10px] font-mono font-bold uppercase">
+          <span v-if="!canManage" class="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700 text-[10px] font-mono font-bold uppercase">
+            READ ONLY
+          </span>
+          <span v-else-if="editingId" class="px-2 py-0.5 rounded bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-500/30 text-[10px] font-mono font-bold uppercase">
             EDIT MODE
           </span>
         </div>
 
-        <form @submit.prevent="handleRegisterEndpoint" class="space-y-3.5 text-xs">
+        <!-- View Only Empty State when no server is selected -->
+        <div v-if="!canManage && !editingId" class="p-8 text-center bg-slate-50 dark:bg-[#141824] rounded-xl border border-slate-200 dark:border-[#1b2234] space-y-3">
+          <div class="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 flex items-center justify-center mx-auto">
+            <Eye class="w-5 h-5 text-slate-400" />
+          </div>
+          <div class="space-y-1">
+            <p class="text-xs font-bold text-slate-800 dark:text-slate-200">Read-Only Observation Mode</p>
+            <p class="text-[11px] text-slate-500 dark:text-slate-400 max-w-xs mx-auto leading-relaxed">
+              Your account has view-only access. Click any connection on the right to inspect its parameters. Modifying or deleting endpoints is disabled.
+            </p>
+          </div>
+        </div>
+
+        <form v-else @submit.prevent="handleRegisterEndpoint" class="space-y-3.5 text-xs">
           <!-- Connection Type Dropdown -->
           <div>
             <label class="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Connection Type</label>
@@ -1479,19 +1499,20 @@ onMounted(() => {
           </template>
 
           <!-- Buttons: Test Connection & Register/Update -->
-          <div class="grid grid-cols-2 gap-3 pt-2">
+          <div :class="canManage ? 'grid grid-cols-2 gap-3 pt-2' : 'pt-2'">
             <button
               type="button"
               @click="handleTestConnection"
               :disabled="testing"
-              class="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-[#20242e] dark:hover:bg-[#282d3a] text-slate-700 hover:text-slate-900 dark:text-slate-200 text-xs font-bold rounded-lg border border-slate-300 dark:border-slate-700 transition disabled:opacity-50 cursor-pointer"
+              :class="canManage ? 'px-4 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-[#20242e] dark:hover:bg-[#282d3a] text-slate-700 hover:text-slate-900 dark:text-slate-200 text-xs font-bold rounded-lg border border-slate-300 dark:border-slate-700 transition disabled:opacity-50 cursor-pointer' : 'w-full px-4 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-[#20242e] dark:hover:bg-[#282d3a] text-slate-700 hover:text-slate-900 dark:text-slate-200 text-xs font-bold rounded-lg border border-slate-300 dark:border-slate-700 transition disabled:opacity-50 cursor-pointer'"
             >
               {{ testing ? 'TESTING...' : 'TEST CONNECTION' }}
             </button>
 
             <button
+              v-if="canManage"
               type="submit"
-              class="px-4 py-2.5 bg-[#4274D9] hover:bg-[#3461c2] text-white text-xs font-bold rounded-lg shadow-lg shadow-[#4274D9]/20 transition flex items-center justify-center gap-1.5"
+              class="px-4 py-2.5 bg-[#4274D9] hover:bg-[#3461c2] text-white text-xs font-bold rounded-lg shadow-lg shadow-[#4274D9]/20 transition flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <Check v-if="editingId" class="w-3.5 h-3.5" />
               <Plus v-else class="w-3.5 h-3.5" />
@@ -1506,7 +1527,7 @@ onMounted(() => {
               @click="cancelEdit"
               class="w-full py-1.5 text-center text-xs text-slate-700 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white bg-slate-100 hover:bg-slate-200 dark:bg-[#141824] dark:hover:bg-[#1b2234] rounded-lg border border-slate-300 dark:border-slate-700/80 transition cursor-pointer"
             >
-              Cancel Edit Mode
+              {{ canManage ? 'Cancel Edit Mode' : 'Close Inspector' }}
             </button>
           </div>
 
@@ -1554,8 +1575,9 @@ onMounted(() => {
           </div>
 
           <button
+            v-if="canManage"
             @click="cancelEdit(); form.type = 'Grafana Core API'"
-            class="flex items-center gap-1 text-xs text-blue-700 dark:text-[#95CCDD] hover:text-blue-900 dark:hover:text-white font-bold uppercase transition"
+            class="flex items-center gap-1 text-xs text-blue-700 dark:text-[#95CCDD] hover:text-blue-900 dark:hover:text-white font-bold uppercase transition cursor-pointer"
           >
             <Plus class="w-3.5 h-3.5" />
             <span>Add Server</span>
@@ -1647,8 +1669,19 @@ onMounted(() => {
                 Ping Test
               </button>
 
-              <!-- Edit Button -->
+              <!-- View / Inspect Button (For Read-Only Users) -->
               <button
+                v-if="!canManage"
+                @click="handleEditConnection(item)"
+                class="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/80 dark:hover:bg-slate-700 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white border border-slate-300 dark:border-slate-700/60 transition shadow-xs cursor-pointer"
+                title="Inspect Connection Details"
+              >
+                <Eye :size="15" class="w-3.5 h-3.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" />
+              </button>
+
+              <!-- Edit Button (Manage Permission Required) -->
+              <button
+                v-if="canManage"
                 @click="handleEditConnection(item)"
                 class="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-blue-50 dark:bg-slate-800/80 text-slate-600 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 dark:hover:bg-blue-950/60 border border-slate-300 dark:border-slate-700/60 transition shadow-xs cursor-pointer"
                 title="Edit Connection"
@@ -1656,8 +1689,9 @@ onMounted(() => {
                 <Pencil :size="15" class="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
               </button>
 
-              <!-- Delete Button -->
+              <!-- Delete Button (Manage Permission Required) -->
               <button
+                v-if="canManage"
                 @click="confirmDelete(item)"
                 class="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-rose-50 dark:bg-slate-800/80 text-slate-600 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 dark:hover:bg-rose-950/60 border border-slate-300 dark:border-slate-700/60 transition shadow-xs cursor-pointer"
                 title="Delete Connection"

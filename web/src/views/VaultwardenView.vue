@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import axios from 'axios';
+import { useAuthStore } from '../stores/auth';
 import ThemeToggle from '../components/ThemeToggle.vue';
 import {
   Shield,
@@ -56,6 +57,9 @@ interface VaultwardenConfig {
 }
 
 // State
+const authStore = useAuthStore();
+const canManage = computed(() => authStore.can('security', 'manage'));
+
 const loading = ref(true);
 const syncing = ref(false);
 const saving = ref(false);
@@ -588,6 +592,7 @@ onUnmounted(() => {
         </button>
 
         <button
+          v-if="canManage"
           @click="showConfigModal = true"
           class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition cursor-pointer shadow-xs"
         >
@@ -637,6 +642,7 @@ onUnmounted(() => {
             Last sync: <strong class="text-slate-800 dark:text-slate-200">{{ formatRelativeTime(config?.lastSyncedAt) }}</strong>
           </span>
           <button
+            v-if="canManage"
             @click="openCreateCipher"
             class="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
           >
@@ -665,6 +671,7 @@ onUnmounted(() => {
         </div>
         <div class="pt-2">
           <button
+            v-if="canManage"
             @click="showConfigModal = true"
             class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-sm inline-flex items-center gap-2"
           >
@@ -880,6 +887,7 @@ onUnmounted(() => {
                   Details
                 </button>
                 <button
+                  v-if="canManage"
                   @click="openEditCipher(item)"
                   class="text-slate-400 hover:text-blue-600 dark:hover:text-[#95CCDD] transition cursor-pointer p-0.5"
                   title="Edit Credential"
@@ -887,6 +895,7 @@ onUnmounted(() => {
                   <Pencil class="w-3.5 h-3.5" />
                 </button>
                 <button
+                  v-if="canManage"
                   @click="confirmDeleteCipher(item)"
                   class="text-slate-400 hover:text-rose-500 transition cursor-pointer p-0.5"
                   title="Delete Credential"
@@ -1079,14 +1088,17 @@ onUnmounted(() => {
 
         <div class="pt-2 flex items-center justify-between border-t border-slate-100 dark:border-[#1b2234]">
           <button
+            v-if="canManage"
             @click="showDetailModal = false; confirmDeleteCipher(selectedItem)"
             class="px-3 py-1.5 text-xs text-rose-600 hover:text-rose-700 font-semibold flex items-center gap-1.5 cursor-pointer"
           >
             <Trash2 class="w-3.5 h-3.5" />
             <span>Delete Credential</span>
           </button>
+          <div v-else></div>
           <div class="flex items-center gap-2">
             <button
+              v-if="canManage"
               @click="openEditCipher(selectedItem)"
               class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5"
             >

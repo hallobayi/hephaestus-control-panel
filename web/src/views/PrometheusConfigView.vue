@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import axios from 'axios';
+import { useAuthStore } from '../stores/auth';
 import {
   RotateCw,
   Check,
@@ -13,6 +14,8 @@ import {
 } from 'lucide-vue-next';
 
 const router = useRouter();
+const authStore = useAuthStore();
+const canManage = computed(() => authStore.can('prometheus_config', 'manage'));
 
 interface PrometheusInstance {
   id: string;
@@ -334,6 +337,7 @@ onMounted(() => {
             </button>
 
             <button
+              v-if="canManage"
               @click="handleSave"
               :disabled="saving || loading || !isLoaded"
               class="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold transition cursor-pointer shadow-sm"
@@ -390,6 +394,7 @@ onMounted(() => {
           <textarea
             ref="editorRef"
             v-model="yamlContent"
+            :readonly="!canManage"
             @scroll="syncScroll"
             class="flex-1 bg-transparent p-3.5 text-amber-400 font-mono text-xs focus:outline-none resize-none leading-relaxed selection:bg-brand-500/30 overflow-y-auto overflow-x-auto whitespace-pre outline-none h-full"
             spellcheck="false"

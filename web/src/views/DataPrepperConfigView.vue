@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import axios from 'axios';
+import { useAuthStore } from '../stores/auth';
 import {
   RotateCw,
   Check,
@@ -14,6 +15,8 @@ import {
 } from 'lucide-vue-next';
 
 const router = useRouter();
+const authStore = useAuthStore();
+const canManage = computed(() => authStore.can('dataprepper_config', 'manage'));
 
 interface DataPrepperInstance {
   id: string;
@@ -340,6 +343,7 @@ onMounted(() => {
           <span v-else class="text-slate-500 italic">No pipeline files found on remote host</span>
 
           <button
+            v-if="canManage"
             @click="isCreatingNewFile = !isCreatingNewFile"
             class="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-[#20242e] dark:hover:bg-slate-700 text-slate-700 hover:text-slate-900 dark:text-slate-200 text-xs font-semibold border border-slate-300 dark:border-slate-700 transition cursor-pointer"
           >
@@ -348,7 +352,7 @@ onMounted(() => {
           </button>
 
           <button
-            v-if="pipelineFiles.length > 0 && selectedPipelineFile"
+            v-if="canManage && pipelineFiles.length > 0 && selectedPipelineFile"
             @click="handleDeleteClick"
             :disabled="deleting || loading"
             class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 text-xs font-semibold border border-rose-300 dark:border-rose-800/60 transition cursor-pointer disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-300 disabled:cursor-not-allowed shadow-xs"
@@ -415,6 +419,7 @@ onMounted(() => {
             </button>
 
             <button
+              v-if="canManage"
               @click="handleDeleteClick"
               :disabled="deleting || loading || !selectedPipelineFile"
               class="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 text-xs font-semibold border border-rose-300 dark:border-rose-800/60 transition cursor-pointer disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-300 disabled:cursor-not-allowed shadow-xs"
@@ -425,6 +430,7 @@ onMounted(() => {
             </button>
 
             <button
+              v-if="canManage"
               @click="handleSave"
               :disabled="saving || loading"
               class="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-slate-200 disabled:text-slate-400 text-white text-xs font-semibold transition cursor-pointer shadow-sm"
@@ -481,6 +487,7 @@ onMounted(() => {
           <textarea
             ref="editorRef"
             v-model="yamlContent"
+            :readonly="!canManage"
             @scroll="syncScroll"
             class="flex-1 bg-transparent p-3.5 text-sky-400 font-mono text-xs focus:outline-none resize-none leading-relaxed selection:bg-brand-500/30 overflow-y-auto overflow-x-auto whitespace-pre outline-none h-full"
             spellcheck="false"

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
 import axios from 'axios';
+import { useAuthStore } from '../stores/auth';
 import {
   RotateCw,
   Search,
@@ -205,6 +206,9 @@ const services = ref<ServiceItem[]>([
     elapsedSec: 16,
   },
 ]);
+
+const authStore = useAuthStore();
+const canManage = computed(() => authStore.can('settings', 'manage'));
 
 const loading = ref(false);
 const filterQuery = ref('');
@@ -682,6 +686,7 @@ onUnmounted(() => {
             </button>
 
             <button
+              v-if="canManage"
               @click="triggerServiceCycle(activeLogService)"
               class="flex items-center gap-1 px-2.5 py-1 rounded bg-brand-600 hover:bg-brand-500 text-white font-medium text-[11px] transition shadow"
               title="Trigger Execution Cycle Now"

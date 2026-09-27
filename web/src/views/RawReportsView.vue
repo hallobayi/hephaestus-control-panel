@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import axios from 'axios';
+import { useAuthStore } from '../stores/auth';
 import {
   Plus,
   Trash2,
@@ -102,6 +103,9 @@ interface RawReport {
 // -----------------------------------------------------------------------------
 // State Management
 // -----------------------------------------------------------------------------
+const authStore = useAuthStore();
+const canManage = computed(() => authStore.can('reports', 'manage'));
+
 const reports = ref<RawReport[]>([]);
 const activeReport = ref<RawReport | null>(null);
 const currentView = ref<'list' | 'detail'>('list');
@@ -1518,6 +1522,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="flex items-center gap-2 shrink-0">
           <button
+            v-if="canManage"
             @click="openCreateReportModal"
             class="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-xs transition flex items-center gap-1.5 cursor-pointer"
           >
@@ -1587,6 +1592,7 @@ onBeforeUnmount(() => {
                 Open Report &rarr;
               </button>
               <button
+                v-if="canManage"
                 @click="openEditReportModal(rep)"
                 class="p-1 text-slate-400 hover:text-blue-500 dark:hover:text-blue-400 transition cursor-pointer"
                 title="Edit Report"
@@ -1594,6 +1600,7 @@ onBeforeUnmount(() => {
                 <Edit3 class="w-3.5 h-3.5" />
               </button>
               <button
+                v-if="canManage"
                 @click="confirmDeleteReport(rep)"
                 class="p-1 text-slate-400 hover:text-rose-500 transition cursor-pointer"
                 title="Delete Report"
@@ -1654,6 +1661,7 @@ onBeforeUnmount(() => {
             All Reports
           </button>
           <button
+            v-if="canManage"
             @click="openEditReportModal(activeReport)"
             class="px-3 py-1.5 border border-slate-200 dark:border-[#1f283d] rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#151c2e] transition cursor-pointer flex items-center gap-1.5"
             title="Edit Report Details"
@@ -1662,6 +1670,7 @@ onBeforeUnmount(() => {
             <span>Edit Report</span>
           </button>
           <button
+            v-if="canManage"
             @click="openAddPanelModal('cpu')"
             class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-xs transition flex items-center gap-1.5 cursor-pointer"
           >
@@ -1677,6 +1686,7 @@ onBeforeUnmount(() => {
             <span>Refresh Data</span>
           </button>
           <button
+            v-if="canManage"
             @click="confirmDeleteReport(activeReport)"
             class="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg border border-rose-200 dark:border-rose-900/50 transition cursor-pointer"
             title="Delete Report"
@@ -1708,6 +1718,7 @@ onBeforeUnmount(() => {
                 <Download class="w-3.5 h-3.5" />
               </button>
               <button
+                v-if="canManage"
                 @click="openEditPanelModal(widget)"
                 class="hover:text-blue-500 cursor-pointer"
                 title="Edit Panel"
@@ -1715,6 +1726,7 @@ onBeforeUnmount(() => {
                 <Edit3 class="w-3.5 h-3.5" />
               </button>
               <button
+                v-if="canManage"
                 @click="confirmDeleteWidget(widget)"
                 class="hover:text-rose-500 cursor-pointer"
                 title="Delete Panel"

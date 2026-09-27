@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import axios from 'axios';
+import { useAuthStore } from '../stores/auth';
 import {
   Play,
   Pause,
@@ -38,6 +39,9 @@ interface EmbedItem {
   isActive: boolean;
   createdAt?: string;
 }
+
+const authStore = useAuthStore();
+const canManage = computed(() => authStore.can('slideshow', 'manage'));
 
 const activeTab = ref<'viewer' | 'manage'>('viewer');
 const embedList = ref<EmbedItem[]>([]);
@@ -494,6 +498,7 @@ onUnmounted(() => {
           </button>
 
           <button
+            v-if="canManage"
             @click="activeTab = 'manage'"
             :class="[
               activeTab === 'manage'
@@ -756,6 +761,7 @@ onUnmounted(() => {
         </div>
 
         <button
+          v-if="canManage"
           @click="openAddModal"
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white shadow transition"
         >
@@ -821,6 +827,7 @@ onUnmounted(() => {
                 </button>
 
                 <button
+                  v-if="canManage"
                   @click="openEditModal(item)"
                   class="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition"
                   title="Edit URL"
@@ -829,6 +836,7 @@ onUnmounted(() => {
                 </button>
 
                 <button
+                  v-if="canManage"
                   @click="deleteEmbed(item.id)"
                   class="p-1.5 rounded bg-slate-800 hover:bg-rose-900/40 text-slate-400 hover:text-rose-400 transition"
                   title="Delete"

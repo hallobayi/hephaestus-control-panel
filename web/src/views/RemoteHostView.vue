@@ -67,6 +67,7 @@ const router = useRouter();
 const route = useRoute();
 const authStore = useAuthStore();
 const themeStore = useThemeStore();
+const canManage = computed(() => authStore.can('remote_servers', 'manage'));
 
 const darkTerminalTheme = {
   background: '#090d16',
@@ -2073,6 +2074,7 @@ onUnmounted(() => {
 
       <!-- Quick Add Server (+) Button -->
       <button
+        v-if="canManage"
         @click="isHostModalOpen = true"
         title="Add New Remote Server"
         class="p-1.5 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-800 transition"
@@ -2282,6 +2284,7 @@ onUnmounted(() => {
 
           <div class="flex items-center gap-2.5 shrink-0">
             <button
+              v-if="canManage"
               @click="isHostModalOpen = true"
               class="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg transition shadow-sm cursor-pointer"
             >
@@ -2290,6 +2293,7 @@ onUnmounted(() => {
             </button>
 
             <button
+              v-if="canManage"
               @click="isGroupModalOpen = true"
               class="flex items-center gap-2 px-4 py-2 bg-white hover:bg-slate-50 dark:bg-[#1b1e26] dark:hover:bg-[#242833] text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-800 transition shadow-sm cursor-pointer"
             >
@@ -2465,7 +2469,7 @@ onUnmounted(() => {
               <div class="flex items-center gap-1 shrink-0">
                 <!-- Share Button (Only Owner or Admin) -->
                 <button
-                  v-if="host.isOwner || authStore.user?.role === 'ADMIN'"
+                  v-if="canManage && (host.isOwner || authStore.user?.role === 'ADMIN')"
                   @click.stop="openShareModal(host, $event)"
                   title="Share access with other users"
                   class="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/80 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-700/60 transition cursor-pointer"
@@ -2475,7 +2479,7 @@ onUnmounted(() => {
 
                 <!-- Edit Button (Only Owner or Admin) -->
                 <button
-                  v-if="host.isOwner || authStore.user?.role === 'ADMIN'"
+                  v-if="canManage && (host.isOwner || authStore.user?.role === 'ADMIN')"
                   @click.stop="openEditHostModal(host, $event)"
                   title="Edit Server Configuration"
                   class="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/80 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-700/60 transition cursor-pointer"
@@ -2485,7 +2489,7 @@ onUnmounted(() => {
 
                 <!-- Delete Button (Only Owner or Admin) -->
                 <button
-                  v-if="host.isOwner || authStore.user?.role === 'ADMIN'"
+                  v-if="canManage && (host.isOwner || authStore.user?.role === 'ADMIN')"
                   @click.stop="handleDeleteHost(host, $event)"
                   title="Delete Server"
                   class="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-rose-50 dark:bg-slate-800/80 dark:hover:bg-rose-950/40 text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 border border-slate-200 dark:border-slate-700/60 transition cursor-pointer"

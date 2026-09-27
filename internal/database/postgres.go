@@ -204,7 +204,7 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 		INSERT INTO system_roles (name, description, is_default, permissions) VALUES 
 			('ADMIN', 'Full system administrator with unrestricted access', true, '{"*": "manage"}'::jsonb),
 			('OPERATOR', 'Operational user with read and manage access to monitoring, servers, and network', true, '{"dashboard": "manage", "remote_servers": "manage", "network_topology": "manage", "backup": "manage", "connections": "manage", "snmp": "manage", "opensearch": "manage", "grok_debugger": "manage", "dataprepper_config": "manage", "prometheus_config": "manage", "opentelemetry_config": "manage", "slideshow": "manage", "settings": "manage"}'::jsonb),
-			('VIEWER', 'Read-only observer access across all monitoring and telemetry views', true, '{"dashboard": "read", "remote_servers": "read", "network_topology": "read", "backup": "read", "connections": "read", "snmp": "read", "opensearch": "read", "grok_debugger": "read", "dataprepper_config": "read", "prometheus_config": "read", "opentelemetry_config": "read", "slideshow": "read", "settings": "none"}'::jsonb)
+			('VIEWER', 'Read-only observer access across all monitoring and telemetry views', true, '{"dashboard": "read", "remote_servers": "read", "network_topology": "read", "backup": "read", "connections": "read", "snmp": "read", "opensearch": "read", "grok_debugger": "read", "dataprepper_config": "read", "prometheus_config": "read", "opentelemetry_config": "read", "slideshow": "read", "security": "read", "infrastructure": "read", "reports": "read", "status_pages": "read", "settings": "none"}'::jsonb)
 		ON CONFLICT (name) DO UPDATE SET 
 			permissions = EXCLUDED.permissions,
 			description = EXCLUDED.description;
@@ -337,6 +337,10 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 		UPDATE system_roles 
 		SET permissions = permissions || '{"infrastructure": "manage", "connections": "manage", "reports": "manage"}'::jsonb 
 		WHERE name IN ('ADMIN', 'OPERATOR');
+
+		UPDATE system_roles 
+		SET permissions = permissions || '{"infrastructure": "read", "reports": "read", "connections": "read"}'::jsonb 
+		WHERE name = 'VIEWER';
 
 		CREATE TABLE IF NOT EXISTS docker_container_metadata (
 			connection_id VARCHAR(50) NOT NULL,

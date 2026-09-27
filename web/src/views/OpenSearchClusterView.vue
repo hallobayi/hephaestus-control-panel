@@ -30,9 +30,12 @@ import {
   Code2,
 } from 'lucide-vue-next';
 import ThemeToggle from '../components/ThemeToggle.vue';
+import { useAuthStore } from '../stores/auth';
 
 const router = useRouter();
 const route = useRoute();
+const authStore = useAuthStore();
+const canManage = computed(() => authStore.can('opensearch', 'manage'));
 
 // Embed / Standalone Mode Detection
 const isEmbedMode = computed(() => {
@@ -1556,9 +1559,10 @@ onUnmounted(() => {
               </button>
 
               <button
+                v-if="canManage"
                 type="submit"
                 :disabled="isSavingConfig"
-                class="px-5 py-2 bg-brand-500 hover:bg-brand-600 text-white font-medium rounded-lg transition disabled:opacity-50"
+                class="px-5 py-2 bg-brand-500 hover:bg-brand-600 text-white font-medium rounded-lg transition disabled:opacity-50 cursor-pointer"
               >
                 {{ isSavingConfig ? 'Saving...' : 'Save Configuration' }}
               </button>

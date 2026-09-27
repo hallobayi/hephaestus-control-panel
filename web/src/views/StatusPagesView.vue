@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import axios from 'axios';
+import { useAuthStore } from '../stores/auth';
 import {
   Plus,
   RefreshCw,
@@ -86,6 +87,9 @@ interface SourceOption {
 }
 
 // State
+const authStore = useAuthStore();
+const canManage = computed(() => authStore.can('status_pages', 'manage'));
+
 const pages = ref<StatusPage[]>([]);
 const sourceOptions = ref<SourceOption[]>([]);
 const loading = ref(false);
@@ -505,6 +509,7 @@ onMounted(() => {
           <span>Refresh</span>
         </button>
         <button
+          v-if="canManage"
           @click="openCreateModal"
           class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition cursor-pointer shadow-xs"
         >
@@ -551,6 +556,7 @@ onMounted(() => {
         </p>
       </div>
       <button
+        v-if="canManage"
         @click="openCreateModal"
         class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition cursor-pointer shadow-xs"
       >
@@ -622,8 +628,8 @@ onMounted(() => {
               @click="openEditDrawer(page)"
               class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-[#1a2133] hover:bg-slate-200 dark:hover:bg-[#252f48] text-slate-700 dark:text-slate-200 text-xs font-semibold transition cursor-pointer"
             >
-              <Edit3 class="w-3.5 h-3.5 text-slate-400" />
-              <span>Configure</span>
+              <component :is="canManage ? Edit3 : Eye" class="w-3.5 h-3.5 text-slate-400" />
+              <span>{{ canManage ? 'Configure' : 'Inspect' }}</span>
             </button>
             <a
               :href="`/status/${page.slug}`"
@@ -635,6 +641,7 @@ onMounted(() => {
             </a>
           </div>
           <button
+            v-if="canManage"
             @click="confirmDeletePage(page)"
             class="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition cursor-pointer"
             title="Delete Status Page"
@@ -767,6 +774,7 @@ onMounted(() => {
               <span>Open Public Page</span>
             </a>
             <button
+              v-if="canManage"
               @click="savePageConfig"
               :disabled="saving"
               class="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition cursor-pointer shadow-xs disabled:opacity-50"
@@ -883,6 +891,7 @@ onMounted(() => {
                   <p class="text-[11px] text-slate-500">Display active incident notices or scheduled maintenance banners.</p>
                 </div>
                 <button
+                  v-if="canManage"
                   @click="openAddIncidentModal"
                   class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-semibold hover:bg-slate-200 dark:hover:bg-slate-700 transition cursor-pointer"
                 >
@@ -913,6 +922,7 @@ onMounted(() => {
                     <p class="text-xs text-slate-600 dark:text-slate-400">{{ inc.message }}</p>
                   </div>
                   <button
+                    v-if="canManage"
                     @click="deleteIncident(inc.id)"
                     class="text-slate-400 hover:text-rose-500 p-1 cursor-pointer"
                     title="Delete Incident"
@@ -933,7 +943,7 @@ onMounted(() => {
                   <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400">Monitored Services</h4>
                   <p class="text-[11px] text-slate-500">Group and connect live services from HCP data sources.</p>
                 </div>
-                <div class="flex items-center gap-2">
+                <div v-if="canManage" class="flex items-center gap-2">
                   <input
                     v-model="newGroupName"
                     placeholder="New group name (e.g. Core Network)"
@@ -962,7 +972,7 @@ onMounted(() => {
                       <h5 class="text-xs font-bold text-slate-900 dark:text-white">{{ group.name }}</h5>
                       <span class="text-[10px] text-slate-400">({{ getItemsForGroup(group.id).length }} monitors)</span>
                     </div>
-                    <div class="flex items-center gap-2">
+                    <div v-if="canManage" class="flex items-center gap-2">
                       <button
                         @click="openAddItemModal(group.id)"
                         class="flex items-center gap-1 px-2 py-1 text-[11px] font-semibold bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 hover:bg-blue-100 rounded-md transition cursor-pointer"
@@ -996,6 +1006,7 @@ onMounted(() => {
                         <span v-if="item.description" class="text-[11px] text-slate-400">- {{ item.description }}</span>
                       </div>
                       <button
+                        v-if="canManage"
                         @click="deleteItem(item.id)"
                         class="text-slate-400 hover:text-rose-500 p-1 cursor-pointer"
                       >
@@ -1013,6 +1024,7 @@ onMounted(() => {
                   <div class="flex items-center justify-between">
                     <h5 class="text-xs font-semibold text-slate-600 dark:text-slate-400">Ungrouped Services</h5>
                     <button
+                      v-if="canManage"
                       @click="openAddItemModal(null)"
                       class="flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-md transition cursor-pointer"
                     >
@@ -1034,6 +1046,7 @@ onMounted(() => {
                         </span>
                       </div>
                       <button
+                        v-if="canManage"
                         @click="deleteItem(item.id)"
                         class="text-slate-400 hover:text-rose-500 p-1 cursor-pointer"
                       >

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
 import axios from 'axios';
+import { useAuthStore } from '../stores/auth';
 import {
   Network,
   Plus,
@@ -49,6 +50,8 @@ import {
 import ThemeToggle from '../components/ThemeToggle.vue';
 
 const router = useRouter();
+const authStore = useAuthStore();
+const canManage = computed(() => authStore.can('network_topology', 'manage'));
 
 interface Sheet {
   id: number;
@@ -1095,6 +1098,7 @@ onUnmounted(() => {
       <div class="flex items-center gap-2">
         <!-- Sync Remote Server Button -->
         <button
+          v-if="canManage"
           @click="openRemoteSyncModal"
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-500/70 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 text-xs font-semibold tracking-wider transition"
           title="Sync registered Remote Server (SSH/SFTP) hosts into active Topology sheet"
@@ -1104,6 +1108,7 @@ onUnmounted(() => {
         </button>
 
         <button
+          v-if="canManage"
           @click="isScanModalOpen = true"
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-500/80 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 text-xs font-semibold tracking-wider transition"
         >
@@ -1112,6 +1117,7 @@ onUnmounted(() => {
         </button>
 
         <button
+          v-if="canManage"
           @click="handleOpenAddDevice"
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-[#20242e] dark:hover:bg-[#282d3a] border border-slate-300 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white transition"
         >
@@ -1120,6 +1126,7 @@ onUnmounted(() => {
         </button>
 
         <button
+          v-if="canManage"
           @click="handleOpenAddLink"
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-[#20242e] dark:hover:bg-[#282d3a] border border-slate-300 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white transition cursor-pointer"
         >
@@ -1213,7 +1220,7 @@ onUnmounted(() => {
       >
         <span>{{ s.name }}</span>
         <button
-          v-if="sheets.length > 1"
+          v-if="canManage && sheets.length > 1"
           @click="promptDeleteSheet(s.id, $event)"
           class="p-0.5 hover:text-rose-500 rounded transition cursor-pointer"
           title="Delete Sheet"
@@ -1224,6 +1231,7 @@ onUnmounted(() => {
 
       <!-- Add Sheet (+) Button -->
       <button
+        v-if="canManage"
         @click="isSheetModalOpen = true"
         title="Add New Topology Sheet"
         class="p-1.5 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition"

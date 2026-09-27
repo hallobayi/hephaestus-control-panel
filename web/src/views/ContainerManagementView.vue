@@ -178,15 +178,21 @@ const isAdmin = computed(() => {
   return role === 'ADMIN' || role === 'SUPERADMIN';
 });
 
+const canManageInfrastructure = computed(() => authStore.can('infrastructure', 'manage'));
+
 const canManageContainer = (c: DockerContainer): boolean => {
-  if (isAdmin.value || c.isOwner) return true;
+  if (isAdmin.value) return true;
+  if (!canManageInfrastructure.value) return false;
+  if (c.isOwner) return true;
   if (c.userPermission === 'manage') return true;
   if (c.visibility === 'public' || !c.visibility) return true;
   return false;
 };
 
 const canAdministerContainer = (c: DockerContainer): boolean => {
-  if (isAdmin.value || c.isOwner) return true;
+  if (isAdmin.value) return true;
+  if (!canManageInfrastructure.value) return false;
+  if (c.isOwner) return true;
   return false;
 };
 
@@ -1613,6 +1619,7 @@ watch(selectedConnectionId, () => {
         </button>
 
         <button
+          v-if="canManageInfrastructure"
           @click="activeTab = 'deploy'"
           :class="[
             'px-4 py-2.5 text-xs font-bold border-b-2 transition flex items-center gap-2 cursor-pointer',
@@ -2064,6 +2071,7 @@ watch(selectedConnectionId, () => {
             Locally stored Docker images available on this environment.
           </p>
           <button
+            v-if="canManageInfrastructure"
             @click="showPullModal = true"
             class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
           >
@@ -2125,6 +2133,7 @@ watch(selectedConnectionId, () => {
                   <!-- Actions -->
                   <td class="py-3 px-4 text-right">
                     <button
+                      v-if="canManageInfrastructure"
                       @click="confirmDeleteImage(img)"
                       class="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded hover:bg-slate-100 dark:hover:bg-[#182136] transition cursor-pointer"
                       title="Delete Image"
@@ -2148,6 +2157,7 @@ watch(selectedConnectionId, () => {
             Docker virtual network bridges, overlays, and host drivers configured on this environment.
           </p>
           <button
+            v-if="canManageInfrastructure"
             @click="showCreateNetModal = true"
             class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
           >
@@ -2252,7 +2262,7 @@ watch(selectedConnectionId, () => {
                   <!-- Actions -->
                   <td class="py-3 px-4 text-right">
                     <button
-                      v-if="net.name !== 'bridge' && net.name !== 'host' && net.name !== 'none'"
+                      v-if="canManageInfrastructure && net.name !== 'bridge' && net.name !== 'host' && net.name !== 'none'"
                       @click="confirmDeleteNetwork(net)"
                       class="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded hover:bg-slate-100 dark:hover:bg-[#182136] transition cursor-pointer"
                       title="Delete Network"
