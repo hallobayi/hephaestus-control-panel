@@ -277,11 +277,28 @@ type RemoteHostFirewallRule struct {
 // ==================== TOPOLOGY DOMAIN ====================
 
 type TopologySheet struct {
-	ID        int       `json:"id"`
-	Name      string    `json:"name"`
-	SortOrder int       `json:"sortOrder"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID             int       `json:"id"`
+	Name           string    `json:"name"`
+	SortOrder      int       `json:"sortOrder"`
+	UserID         *int      `json:"userId,omitempty"`
+	OwnerUsername  string    `json:"ownerUsername,omitempty"`
+	Visibility     string    `json:"visibility"` // "public" or "private"
+	IsOwner        bool      `json:"isOwner"`
+	UserPermission string    `json:"userPermission,omitempty"` // "owner", "manage", "read", "public"
+	SharesCount    int       `json:"sharesCount"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+type TopologySheetShare struct {
+	ID               string    `json:"id"`
+	SheetID          int       `json:"sheetId"`
+	UserID           int       `json:"userId"`
+	Username         string    `json:"username"`
+	Permission       string    `json:"permission"` // "read" or "manage"
+	SharedBy         *int      `json:"sharedBy,omitempty"`
+	SharedByUsername string    `json:"sharedByUsername,omitempty"`
+	CreatedAt        time.Time `json:"createdAt"`
 }
 
 type TopologyDevice struct {

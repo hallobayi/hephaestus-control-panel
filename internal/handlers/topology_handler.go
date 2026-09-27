@@ -45,6 +45,15 @@ func (h *TopologyHandler) GetGraph(c *gin.Context) {
 		}
 	}
 
+	if sheetID != nil {
+		userID, userRole := getUserContext(c)
+		hasAccess, _, _, err := h.topologyRepo.CheckSheetAccess(c.Request.Context(), *sheetID, userID, userRole)
+		if err != nil || !hasAccess {
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: you do not have permission to view this topology sheet"})
+			return
+		}
+	}
+
 	graph, err := h.topoService.GetGraph(c.Request.Context(), sheetID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
@@ -55,7 +64,8 @@ func (h *TopologyHandler) GetGraph(c *gin.Context) {
 
 // Sheets
 func (h *TopologyHandler) ListSheets(c *gin.Context) {
-	sheets, err := h.topologyRepo.ListSheets(c.Request.Context())
+	userID, userRole := getUserContext(c)
+	sheets, err := h.topologyRepo.ListSheets(c.Request.Context(), userID, userRole)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
@@ -65,15 +75,22 @@ func (h *TopologyHandler) ListSheets(c *gin.Context) {
 
 func (h *TopologyHandler) CreateSheet(c *gin.Context) {
 	var req struct {
-		Name      string `json:"name" binding:"required"`
-		SortOrder int    `json:"sortOrder"`
+		Name       string `json:"name" binding:"required"`
+		SortOrder  int    `json:"sortOrder"`
+		Visibility string `json:"visibility"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input"})
 		return
 	}
 
-	sheet, err := h.topologyRepo.CreateSheet(c.Request.Context(), req.Name, req.SortOrder)
+	userID, _ := getUserContext(c)
+	var uid *int
+	if userID > 0 {
+		uid = &userID
+	}
+
+	sheet, err := h.topologyRepo.CreateSheet(c.Request.Context(), req.Name, req.SortOrder, uid, req.Visibility)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
@@ -83,6 +100,13 @@ func (h *TopologyHandler) CreateSheet(c *gin.Context) {
 
 func (h *TopologyHandler) UpdateSheet(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
+	userID, userRole := getUserContext(c)
+	hasAccess, isOwner, perm, err := h.topologyRepo.CheckSheetAccess(c.Request.Context(), id, userID, userRole)
+	if err != nil || !hasAccess || (!isOwner && !domain.IsAdminRole(userRole) && perm != "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: you do not have permission to edit this sheet"})
+		return
+	}
+
 	var req struct {
 		Name      string `json:"name"`
 		SortOrder int    `json:"sortOrder"`
@@ -99,13 +123,124 @@ func (h *TopologyHandler) UpdateSheet(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Sheet updated."})
 }
 
+func (h *TopologyHandler) UpdateSheetVisibility(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	userID, userRole := getUserContext(c)
+	hasAccess, isOwner, _, err := h.topologyRepo.CheckSheetAccess(c.Request.Context(), id, userID, userRole)
+	if err != nil || !hasAccess || (!isOwner && !domain.IsAdminRole(userRole)) {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: only sheet owner or administrator can modify visibility"})
+		return
+	}
+
+	var req struct {
+		Visibility string `json:"visibility" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input"})
+		return
+	}
+
+	if err := h.topologyRepo.UpdateSheetVisibility(c.Request.Context(), id, req.Visibility); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Sheet visibility updated successfully."})
+}
+
 func (h *TopologyHandler) DeleteSheet(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
+	userID, userRole := getUserContext(c)
+	hasAccess, isOwner, _, err := h.topologyRepo.CheckSheetAccess(c.Request.Context(), id, userID, userRole)
+	if err != nil || !hasAccess || (!isOwner && !domain.IsAdminRole(userRole)) {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: only sheet owner or administrator can delete this sheet"})
+		return
+	}
+
 	if err := h.topologyRepo.DeleteSheet(c.Request.Context(), id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Sheet deleted."})
+}
+
+// ==================== SHEET SHARING HANDLERS ====================
+
+func (h *TopologyHandler) ListSheetShares(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	userID, userRole := getUserContext(c)
+	hasAccess, isOwner, _, err := h.topologyRepo.CheckSheetAccess(c.Request.Context(), id, userID, userRole)
+	if err != nil || !hasAccess || (!isOwner && !domain.IsAdminRole(userRole)) {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: only sheet owner or administrator can view shares"})
+		return
+	}
+
+	shares, err := h.topologyRepo.ListSheetShares(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": shares})
+}
+
+func (h *TopologyHandler) AddSheetShare(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	userID, userRole := getUserContext(c)
+	hasAccess, isOwner, _, err := h.topologyRepo.CheckSheetAccess(c.Request.Context(), id, userID, userRole)
+	if err != nil || !hasAccess || (!isOwner && !domain.IsAdminRole(userRole)) {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: only sheet owner or administrator can share access"})
+		return
+	}
+
+	var req struct {
+		UserID     int    `json:"userId" binding:"required"`
+		Permission string `json:"permission"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input"})
+		return
+	}
+
+	if req.UserID == userID {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "You cannot share a sheet with yourself"})
+		return
+	}
+
+	if err := h.topologyRepo.AddSheetShare(c.Request.Context(), id, req.UserID, req.Permission, userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Access granted successfully."})
+}
+
+func (h *TopologyHandler) DeleteSheetShare(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	targetUserID, err := strconv.Atoi(c.Param("userId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid user ID"})
+		return
+	}
+
+	userID, userRole := getUserContext(c)
+	hasAccess, isOwner, _, err := h.topologyRepo.CheckSheetAccess(c.Request.Context(), id, userID, userRole)
+	if err != nil || !hasAccess || (!isOwner && !domain.IsAdminRole(userRole)) {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: only sheet owner or administrator can revoke access"})
+		return
+	}
+
+	if err := h.topologyRepo.DeleteSheetShare(c.Request.Context(), id, targetUserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Access revoked successfully."})
+}
+
+func (h *TopologyHandler) ListAvailableUsers(c *gin.Context) {
+	users, err := h.topologyRepo.ListAvailableUsers(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": users})
 }
 
 // Devices
@@ -114,6 +249,15 @@ func (h *TopologyHandler) SaveDevice(c *gin.Context) {
 	if err := c.ShouldBindJSON(&dev); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input"})
 		return
+	}
+
+	if dev.SheetID != nil {
+		userID, userRole := getUserContext(c)
+		hasAccess, isOwner, perm, err := h.topologyRepo.CheckSheetAccess(c.Request.Context(), *dev.SheetID, userID, userRole)
+		if err == nil && (!hasAccess || (!isOwner && !domain.IsAdminRole(userRole) && perm != "manage")) {
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: read-only access for this sheet"})
+			return
+		}
 	}
 
 	if dev.ID == "" {
@@ -161,6 +305,15 @@ func (h *TopologyHandler) RemoveDeviceFromCanvas(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&req)
 
+	if req.SheetID != nil {
+		userID, userRole := getUserContext(c)
+		hasAccess, isOwner, perm, err := h.topologyRepo.CheckSheetAccess(c.Request.Context(), *req.SheetID, userID, userRole)
+		if err == nil && (!hasAccess || (!isOwner && !domain.IsAdminRole(userRole) && perm != "manage")) {
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: read-only access for this sheet"})
+			return
+		}
+	}
+
 	if err := h.topologyRepo.RemoveDeviceFromCanvas(c.Request.Context(), id, req.SheetID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
@@ -174,6 +327,15 @@ func (h *TopologyHandler) SaveEdge(c *gin.Context) {
 	if err := c.ShouldBindJSON(&edge); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input"})
 		return
+	}
+
+	if edge.SheetID != nil {
+		userID, userRole := getUserContext(c)
+		hasAccess, isOwner, perm, err := h.topologyRepo.CheckSheetAccess(c.Request.Context(), *edge.SheetID, userID, userRole)
+		if err == nil && (!hasAccess || (!isOwner && !domain.IsAdminRole(userRole) && perm != "manage")) {
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: read-only access for this sheet"})
+			return
+		}
 	}
 
 	if err := h.topologyRepo.SaveEdge(c.Request.Context(), edge); err != nil {

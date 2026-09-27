@@ -3,9 +3,13 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"go-hephaestus/internal/core/domain"
 	"go-hephaestus/internal/database"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type TopologyRepository struct{}
@@ -15,12 +19,48 @@ func NewTopologyRepository() *TopologyRepository {
 }
 
 // Sheets
-func (r *TopologyRepository) ListSheets(ctx context.Context) ([]domain.TopologySheet, error) {
+func (r *TopologyRepository) ListSheets(ctx context.Context, userID int, userRole string) ([]domain.TopologySheet, error) {
 	pool, err := database.GetPool()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := pool.Query(ctx, `SELECT id, name, sort_order, created_at, updated_at FROM topology_sheets ORDER BY sort_order ASC, id ASC`)
+
+	isAdmin := domain.IsAdminRole(userRole)
+	var rows pgx.Rows
+
+	if isAdmin || (userID == 0 && userRole == "ADMIN") {
+		query := `
+			SELECT 
+				s.id, s.name, s.sort_order, s.user_id, 
+				COALESCE(u.username, 'Admin') AS owner_username,
+				COALESCE(s.visibility, 'public') AS visibility,
+				s.created_at, s.updated_at,
+				(SELECT COUNT(*) FROM topology_sheet_shares WHERE sheet_id = s.id) AS shares_count
+			FROM topology_sheets s
+			LEFT JOIN users u ON s.user_id = u.id
+			ORDER BY s.sort_order ASC, s.id ASC
+		`
+		rows, err = pool.Query(ctx, query)
+	} else {
+		query := `
+			SELECT 
+				s.id, s.name, s.sort_order, s.user_id, 
+				COALESCE(u.username, 'Admin') AS owner_username,
+				COALESCE(s.visibility, 'public') AS visibility,
+				s.created_at, s.updated_at,
+				(SELECT COUNT(*) FROM topology_sheet_shares WHERE sheet_id = s.id) AS shares_count,
+				COALESCE(tss.permission, '') AS share_perm
+			FROM topology_sheets s
+			LEFT JOIN users u ON s.user_id = u.id
+			LEFT JOIN topology_sheet_shares tss ON s.id = tss.sheet_id AND tss.user_id = $1
+			WHERE COALESCE(s.visibility, 'public') = 'public'
+			   OR s.user_id = $1
+			   OR tss.user_id = $1
+			ORDER BY s.sort_order ASC, s.id ASC
+		`
+		rows, err = pool.Query(ctx, query, userID)
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -29,24 +69,56 @@ func (r *TopologyRepository) ListSheets(ctx context.Context) ([]domain.TopologyS
 	var sheets []domain.TopologySheet
 	for rows.Next() {
 		var s domain.TopologySheet
-		if err := rows.Scan(&s.ID, &s.Name, &s.SortOrder, &s.CreatedAt, &s.UpdatedAt); err != nil {
-			return nil, err
+		var sharePerm string
+		if isAdmin || (userID == 0 && userRole == "ADMIN") {
+			if err := rows.Scan(&s.ID, &s.Name, &s.SortOrder, &s.UserID, &s.OwnerUsername, &s.Visibility, &s.CreatedAt, &s.UpdatedAt, &s.SharesCount); err != nil {
+				return nil, err
+			}
+			s.IsOwner = true
+			s.UserPermission = "manage"
+		} else {
+			if err := rows.Scan(&s.ID, &s.Name, &s.SortOrder, &s.UserID, &s.OwnerUsername, &s.Visibility, &s.CreatedAt, &s.UpdatedAt, &s.SharesCount, &sharePerm); err != nil {
+				return nil, err
+			}
+			s.IsOwner = (s.UserID != nil && *s.UserID == userID)
+			if s.IsOwner {
+				s.UserPermission = "manage"
+			} else if sharePerm != "" {
+				s.UserPermission = sharePerm
+			} else {
+				s.UserPermission = "public"
+			}
 		}
 		sheets = append(sheets, s)
+	}
+	if sheets == nil {
+		sheets = []domain.TopologySheet{}
 	}
 	return sheets, nil
 }
 
-func (r *TopologyRepository) CreateSheet(ctx context.Context, name string, sortOrder int) (*domain.TopologySheet, error) {
+func (r *TopologyRepository) CreateSheet(ctx context.Context, name string, sortOrder int, userID *int, visibility string) (*domain.TopologySheet, error) {
 	pool, err := database.GetPool()
 	if err != nil {
 		return nil, err
 	}
+	if visibility != "private" {
+		visibility = "public"
+	}
 	var s domain.TopologySheet
 	s.Name = name
 	s.SortOrder = sortOrder
-	err = pool.QueryRow(ctx, `INSERT INTO topology_sheets (name, sort_order) VALUES ($1, $2) RETURNING id, created_at, updated_at`, name, sortOrder).
-		Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt)
+	s.UserID = userID
+	s.Visibility = visibility
+	s.IsOwner = true
+	s.UserPermission = "manage"
+	s.SharesCount = 0
+
+	err = pool.QueryRow(ctx, `
+		INSERT INTO topology_sheets (name, sort_order, user_id, visibility) 
+		VALUES ($1, $2, $3, $4) 
+		RETURNING id, created_at, updated_at
+	`, name, sortOrder, userID, visibility).Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -62,6 +134,18 @@ func (r *TopologyRepository) UpdateSheet(ctx context.Context, id int, name strin
 	return err
 }
 
+func (r *TopologyRepository) UpdateSheetVisibility(ctx context.Context, id int, visibility string) error {
+	pool, err := database.GetPool()
+	if err != nil {
+		return err
+	}
+	if visibility != "private" {
+		visibility = "public"
+	}
+	_, err = pool.Exec(ctx, `UPDATE topology_sheets SET visibility = $1, updated_at = NOW() WHERE id = $2`, visibility, id)
+	return err
+}
+
 func (r *TopologyRepository) DeleteSheet(ctx context.Context, id int) error {
 	pool, err := database.GetPool()
 	if err != nil {
@@ -69,6 +153,148 @@ func (r *TopologyRepository) DeleteSheet(ctx context.Context, id int) error {
 	}
 	_, err = pool.Exec(ctx, `DELETE FROM topology_sheets WHERE id = $1`, id)
 	return err
+}
+
+func (r *TopologyRepository) CheckSheetAccess(ctx context.Context, sheetID int, userID int, userRole string) (hasAccess bool, isOwner bool, perm string, err error) {
+	if domain.IsAdminRole(userRole) {
+		return true, true, "manage", nil
+	}
+
+	pool, err := database.GetPool()
+	if err != nil {
+		return false, false, "", err
+	}
+
+	query := `
+		SELECT 
+			s.user_id,
+			COALESCE(s.visibility, 'public'),
+			(s.user_id = $2) AS is_owner,
+			COALESCE(tss.permission, '') AS share_perm
+		FROM topology_sheets s
+		LEFT JOIN topology_sheet_shares tss ON s.id = tss.sheet_id AND tss.user_id = $2
+		WHERE s.id = $1
+	`
+	var ownerID *int
+	var visibility string
+	var ownerBool bool
+	var sharePerm string
+	err = pool.QueryRow(ctx, query, sheetID, userID).Scan(&ownerID, &visibility, &ownerBool, &sharePerm)
+	if err != nil {
+		return false, false, "", err
+	}
+
+	if ownerBool {
+		return true, true, "manage", nil
+	}
+	if sharePerm != "" {
+		return true, false, sharePerm, nil
+	}
+	if visibility == "public" || visibility == "" {
+		return true, false, "read", nil
+	}
+
+	return false, false, "", nil
+}
+
+// Sheet Shares
+func (r *TopologyRepository) ListSheetShares(ctx context.Context, sheetID int) ([]domain.TopologySheetShare, error) {
+	pool, err := database.GetPool()
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
+		SELECT s.id, s.sheet_id, s.user_id, u.username, s.permission,
+		       s.shared_by, COALESCE(sb.username, 'Admin') AS shared_by_username, s.created_at
+		FROM topology_sheet_shares s
+		JOIN users u ON s.user_id = u.id
+		LEFT JOIN users sb ON s.shared_by = sb.id
+		WHERE s.sheet_id = $1
+		ORDER BY s.created_at DESC
+	`
+	rows, err := pool.Query(ctx, query, sheetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var shares []domain.TopologySheetShare
+	for rows.Next() {
+		var s domain.TopologySheetShare
+		if err := rows.Scan(&s.ID, &s.SheetID, &s.UserID, &s.Username, &s.Permission, &s.SharedBy, &s.SharedByUsername, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		shares = append(shares, s)
+	}
+	if shares == nil {
+		shares = []domain.TopologySheetShare{}
+	}
+	return shares, nil
+}
+
+func (r *TopologyRepository) AddSheetShare(ctx context.Context, sheetID int, targetUserID int, permission string, sharedBy int) error {
+	pool, err := database.GetPool()
+	if err != nil {
+		return err
+	}
+
+	if permission != "manage" {
+		permission = "read"
+	}
+
+	shareID := fmt.Sprintf("tss-%s", uuid.New().String()[:8])
+	query := `
+		INSERT INTO topology_sheet_shares (id, sheet_id, user_id, permission, shared_by, created_at)
+		VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+		ON CONFLICT (sheet_id, user_id) DO UPDATE SET
+			permission = EXCLUDED.permission,
+			shared_by = EXCLUDED.shared_by,
+			created_at = CURRENT_TIMESTAMP
+	`
+	_, err = pool.Exec(ctx, query, shareID, sheetID, targetUserID, permission, sharedBy)
+	return err
+}
+
+func (r *TopologyRepository) DeleteSheetShare(ctx context.Context, sheetID int, targetUserID int) error {
+	pool, err := database.GetPool()
+	if err != nil {
+		return err
+	}
+	_, err = pool.Exec(ctx, `DELETE FROM topology_sheet_shares WHERE sheet_id = $1 AND user_id = $2`, sheetID, targetUserID)
+	return err
+}
+
+func (r *TopologyRepository) ListAvailableUsers(ctx context.Context) ([]map[string]interface{}, error) {
+	pool, err := database.GetPool()
+	if err != nil {
+		return nil, err
+	}
+
+	query := `SELECT id, username, role FROM users ORDER BY username ASC`
+	rows, err := pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var username, role string
+		if err := rows.Scan(&id, &username, &role); err != nil {
+			continue
+		}
+		users = append(users, map[string]interface{}{
+			"id":       id,
+			"username": username,
+			"role":     role,
+		})
+	}
+	if users == nil {
+		users = []map[string]interface{}{}
+	}
+	return users, nil
 }
 
 // Devices

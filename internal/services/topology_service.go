@@ -246,7 +246,7 @@ func (s *TopologyService) SyncFromRemoteServers(ctx context.Context, sheetID *in
 
 	// If sheetID is not specified, default to the first active sheet
 	if sheetID == nil {
-		sheets, err := s.topologyRepo.ListSheets(ctx)
+		sheets, err := s.topologyRepo.ListSheets(ctx, 0, "ADMIN")
 		if err == nil && len(sheets) > 0 {
 			sheetID = &sheets[0].ID
 		}

@@ -216,9 +216,24 @@ CREATE TABLE IF NOT EXISTS topology_sheets (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     sort_order INTEGER DEFAULT 0,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    visibility VARCHAR(20) NOT NULL DEFAULT 'public',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_topology_sheets_user_id ON topology_sheets(user_id);
+
+CREATE TABLE IF NOT EXISTS topology_sheet_shares (
+    id VARCHAR(50) PRIMARY KEY,
+    sheet_id INTEGER NOT NULL REFERENCES topology_sheets(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission VARCHAR(20) NOT NULL DEFAULT 'read',
+    shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(sheet_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_topology_sheet_shares_sheet_id ON topology_sheet_shares(sheet_id);
+CREATE INDEX IF NOT EXISTS idx_topology_sheet_shares_user_id ON topology_sheet_shares(user_id);
 
 -- 17. TopologyDevices - Manually added or auto-discovered network devices
 CREATE TABLE IF NOT EXISTS topology_devices (

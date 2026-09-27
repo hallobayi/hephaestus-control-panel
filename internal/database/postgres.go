@@ -185,6 +185,10 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 			IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'topology_pending') THEN 
 				ALTER TABLE topology_pending ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
 			END IF; 
+			IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'topology_sheets') THEN 
+				ALTER TABLE topology_sheets ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+				ALTER TABLE topology_sheets ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'public';
+			END IF; 
 		END $$;
 	`
 	if _, err := pool.Exec(ctx, preUpgradeSQL); err != nil {
@@ -464,6 +468,27 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 		UPDATE system_roles 
 		SET permissions = permissions || '{"status_pages": "read"}'::jsonb 
 		WHERE name = 'VIEWER';
+
+		-- Topology Sheet Access & Granular Sharing
+		ALTER TABLE topology_sheets ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+		ALTER TABLE topology_sheets ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'public';
+		CREATE INDEX IF NOT EXISTS idx_topology_sheets_user_id ON topology_sheets(user_id);
+
+		UPDATE topology_sheets 
+		SET user_id = (SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1)
+		WHERE user_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN');
+
+		CREATE TABLE IF NOT EXISTS topology_sheet_shares (
+			id VARCHAR(50) PRIMARY KEY,
+			sheet_id INTEGER NOT NULL REFERENCES topology_sheets(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			permission VARCHAR(20) NOT NULL DEFAULT 'read',
+			shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(sheet_id, user_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_topology_sheet_shares_sheet_id ON topology_sheet_shares(sheet_id);
+		CREATE INDEX IF NOT EXISTS idx_topology_sheet_shares_user_id ON topology_sheet_shares(user_id);
 	`
 	if _, err := pool.Exec(ctx, upgradeSQL); err != nil {
 		logger.Warn("Database", fmt.Sprintf("Incremental upgrades execution notice: %v", err))

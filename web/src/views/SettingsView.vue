@@ -40,6 +40,7 @@ import {
   UserPlus,
   KeyRound,
   Radio,
+  Boxes,
 } from 'lucide-vue-next';
 
 const route = useRoute();
@@ -524,9 +525,13 @@ interface UserItem {
 const SYSTEM_FEATURES = [
   { key: 'dashboard', label: 'Dashboard & Overview', desc: 'Main telemetry, resource gauges, and system status widgets', icon: Activity },
   { key: 'remote_servers', label: 'Remote Servers & SSH', desc: 'SSH Web Terminal, SFTP explorer, processes, and service manager', icon: Terminal },
+  { key: 'infrastructure', label: 'Management Containers', desc: 'Docker Hosts, Containers, Images, Networks, and Deploy Wizard', icon: Boxes },
   { key: 'network_topology', label: 'Network Topology', desc: 'Interactive topology canvas, device nodes, links, and subnet discovery', icon: Network },
   { key: 'backup', label: 'Database Backups', desc: 'Automated database dumps (MySQL, PG, Mongo, ES) and S3 destinations', icon: HardDrive },
   { key: 'connections', label: 'Monitoring Profiles', desc: 'Grafana, Prometheus, OpenSearch, Uptime Kuma connection credentials', icon: Link2 },
+  { key: 'security', label: 'Vaultwarden Credentials', desc: 'E2EE Secrets Vault, Passwords, API tokens, and secure notes', icon: Shield },
+  { key: 'status_pages', label: 'Status Pages & Incidents', desc: 'Public & internal status pages, SLA monitors, incident announcements', icon: Activity },
+  { key: 'reports', label: 'Telemetry Reports', desc: 'Visual Report Builder, raw data exports, and PDF/PNG reports', icon: FileText },
   { key: 'snmp', label: 'SNMP Browser & MIBs', desc: 'SNMP OID query, walk engine, and enterprise MIB definition importer', icon: Cpu },
   { key: 'opensearch', label: 'OpenSearch Cluster', desc: 'Elasticsearch/OpenSearch indices, shards, health, and node stats', icon: Search },
   { key: 'grok_debugger', label: 'Grok Log Parser', desc: 'Regex pattern tester and log pipeline rule development environment', icon: Code2 },

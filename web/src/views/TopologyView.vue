@@ -46,17 +46,47 @@ import {
   Cpu,
   Globe,
   ArrowUpDown,
+  Lock,
+  Unlock,
+  Users,
+  Share2,
 } from 'lucide-vue-next';
 import ThemeToggle from '../components/ThemeToggle.vue';
 
 const router = useRouter();
 const authStore = useAuthStore();
 const canManage = computed(() => authStore.can('network_topology', 'manage'));
+const isAdmin = computed(() => authStore.user?.role?.toUpperCase() === 'ADMIN');
 
 interface Sheet {
   id: number;
   name: string;
   sortOrder: number;
+  userId?: number;
+  ownerUsername?: string;
+  visibility: 'public' | 'private';
+  isOwner: boolean;
+  userPermission?: 'owner' | 'manage' | 'read' | 'public';
+  sharesCount: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+interface SheetShare {
+  id: string;
+  sheetId: number;
+  userId: number;
+  username: string;
+  permission: 'read' | 'manage';
+  sharedBy?: number;
+  sharedByUsername?: string;
+  createdAt: string;
+}
+
+interface UserOption {
+  id: number;
+  username: string;
+  role: string;
 }
 
 interface Device {
@@ -89,6 +119,28 @@ const allDevices = ref<Device[]>([]);
 const activeNodes = ref<Device[]>([]);
 const edges = ref<Edge[]>([]);
 const loading = ref(false);
+
+const activeSheet = computed(() => sheets.value.find(s => s.id === activeSheetId.value) || null);
+const canManageActiveSheet = computed(() => {
+  if (isAdmin.value) return true;
+  if (!activeSheet.value) return canManage.value;
+  if (activeSheet.value.isOwner) return true;
+  if (activeSheet.value.userPermission === 'manage') return true;
+  return false;
+});
+
+// Sheet Sharing & Access Control State
+const isShareModalOpen = ref(false);
+const selectedSheetForShare = ref<Sheet | null>(null);
+const isShareLoading = ref(false);
+const isShareSubmitting = ref(false);
+const activeSheetShares = ref<SheetShare[]>([]);
+const availableUsers = ref<UserOption[]>([]);
+const shareForm = ref<{ userId: number | ''; permission: 'read' | 'manage' }>({
+  userId: '',
+  permission: 'read',
+});
+const newSheetVisibility = ref<'public' | 'private'>('public');
 
 // UI Controls & Sidebars
 const isSidebarCollapsed = ref(false);
@@ -255,12 +307,12 @@ const fetchSheets = async () => {
     const res = await axios.get('/api/v1/topology/sheets');
     if (res.data.success && res.data.data && res.data.data.length > 0) {
       sheets.value = res.data.data;
-      if (!activeSheetId.value) {
+      if (!activeSheetId.value || !sheets.value.some(s => s.id === activeSheetId.value)) {
         activeSheetId.value = sheets.value[0].id;
       }
     } else {
       // Default Sheet
-      const defaultSheet = await axios.post('/api/v1/topology/sheets', { name: 'Honet-labs Topology', sortOrder: 0 });
+      const defaultSheet = await axios.post('/api/v1/topology/sheets', { name: 'Honet-labs Topology', sortOrder: 0, visibility: 'public' });
       if (defaultSheet.data.success) {
         sheets.value = [defaultSheet.data.data];
         activeSheetId.value = defaultSheet.data.data.id;
@@ -321,12 +373,14 @@ const handleCreateSheet = async () => {
     const res = await axios.post('/api/v1/topology/sheets', {
       name: newSheetName.value.trim(),
       sortOrder: sheets.value.length,
+      visibility: newSheetVisibility.value,
     });
     if (res.data.success) {
       sheets.value.push(res.data.data);
       activeSheetId.value = res.data.data.id;
       isSheetModalOpen.value = false;
       newSheetName.value = '';
+      newSheetVisibility.value = 'public';
       fetchGraph();
     }
   } catch (err) {
@@ -338,10 +392,12 @@ const handleCreateSheet = async () => {
 const promptDeleteSheet = (sheetId: number, e: MouseEvent) => {
   e.stopPropagation();
   if (sheets.value.length <= 1) {
-    alert('You must have at least one topology sheet.');
     return;
   }
   const s = sheets.value.find(item => item.id === sheetId);
+  if (!isAdmin.value && s && !s.isOwner) {
+    return;
+  }
   deleteModal.value = {
     visible: true,
     type: 'sheet',
@@ -350,6 +406,92 @@ const promptDeleteSheet = (sheetId: number, e: MouseEvent) => {
     subtitle: `Are you sure you want to delete the sheet "${s ? s.name : sheetId}"? All device placements on this sheet will be cleared.`,
     deleting: false,
   };
+};
+
+// =================================================================
+// SHEET SHARING & ACCESS HANDLERS
+// =================================================================
+const openShareModal = async (sheet: Sheet) => {
+  selectedSheetForShare.value = sheet;
+  isShareModalOpen.value = true;
+  shareForm.value = { userId: '', permission: 'read' };
+  isShareLoading.value = true;
+  try {
+    const [sharesRes, usersRes] = await Promise.all([
+      axios.get(`/api/v1/topology/sheets/${sheet.id}/shares`),
+      axios.get('/api/v1/topology/users'),
+    ]);
+    if (sharesRes.data.success) {
+      activeSheetShares.value = sharesRes.data.data || [];
+    }
+    if (usersRes.data.success) {
+      availableUsers.value = usersRes.data.data || [];
+    }
+  } catch (err) {
+    console.error('Failed to load sheet shares:', err);
+  } finally {
+    isShareLoading.value = false;
+  }
+};
+
+const handleToggleSheetVisibility = async (newVisibility: 'public' | 'private') => {
+  if (!selectedSheetForShare.value) return;
+  try {
+    const res = await axios.put(`/api/v1/topology/sheets/${selectedSheetForShare.value.id}/visibility`, {
+      visibility: newVisibility,
+    });
+    if (res.data.success) {
+      selectedSheetForShare.value.visibility = newVisibility;
+      const target = sheets.value.find(s => s.id === selectedSheetForShare.value?.id);
+      if (target) {
+        target.visibility = newVisibility;
+      }
+    }
+  } catch (err: any) {
+    alert(err.response?.data?.error || 'Failed to update visibility');
+  }
+};
+
+const handleGrantSheetShare = async () => {
+  if (!selectedSheetForShare.value || !shareForm.value.userId) return;
+  isShareSubmitting.value = true;
+  try {
+    const res = await axios.post(`/api/v1/topology/sheets/${selectedSheetForShare.value.id}/shares`, {
+      userId: shareForm.value.userId,
+      permission: shareForm.value.permission,
+    });
+    if (res.data.success) {
+      const sharesRes = await axios.get(`/api/v1/topology/sheets/${selectedSheetForShare.value.id}/shares`);
+      if (sharesRes.data.success) {
+        activeSheetShares.value = sharesRes.data.data || [];
+      }
+      const target = sheets.value.find(s => s.id === selectedSheetForShare.value?.id);
+      if (target) {
+        target.sharesCount = activeSheetShares.value.length;
+      }
+      shareForm.value = { userId: '', permission: 'read' };
+    }
+  } catch (err: any) {
+    alert(err.response?.data?.error || 'Failed to grant share');
+  } finally {
+    isShareSubmitting.value = false;
+  }
+};
+
+const handleRevokeSheetShare = async (targetUserId: number) => {
+  if (!selectedSheetForShare.value) return;
+  try {
+    const res = await axios.delete(`/api/v1/topology/sheets/${selectedSheetForShare.value.id}/shares/${targetUserId}`);
+    if (res.data.success) {
+      activeSheetShares.value = activeSheetShares.value.filter(s => s.userId !== targetUserId);
+      const target = sheets.value.find(s => s.id === selectedSheetForShare.value?.id);
+      if (target) {
+        target.sharesCount = activeSheetShares.value.length;
+      }
+    }
+  } catch (err: any) {
+    alert(err.response?.data?.error || 'Failed to revoke share');
+  }
 };
 
 // Toggle Device On Canvas
@@ -1096,9 +1238,18 @@ onUnmounted(() => {
 
       <!-- Center Toolbar Actions -->
       <div class="flex items-center gap-2">
+        <!-- View Only Badge for non-manage users on active sheet -->
+        <div
+          v-if="!canManageActiveSheet"
+          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 text-xs font-mono font-medium"
+        >
+          <Lock class="w-3.5 h-3.5" />
+          <span>VIEW ONLY SHEET</span>
+        </div>
+
         <!-- Sync Remote Server Button -->
         <button
-          v-if="canManage"
+          v-if="canManageActiveSheet"
           @click="openRemoteSyncModal"
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-500/70 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 text-xs font-semibold tracking-wider transition"
           title="Sync registered Remote Server (SSH/SFTP) hosts into active Topology sheet"
@@ -1108,7 +1259,7 @@ onUnmounted(() => {
         </button>
 
         <button
-          v-if="canManage"
+          v-if="canManageActiveSheet"
           @click="isScanModalOpen = true"
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-500/80 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 text-xs font-semibold tracking-wider transition"
         >
@@ -1117,7 +1268,7 @@ onUnmounted(() => {
         </button>
 
         <button
-          v-if="canManage"
+          v-if="canManageActiveSheet"
           @click="handleOpenAddDevice"
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-[#20242e] dark:hover:bg-[#282d3a] border border-slate-300 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white transition"
         >
@@ -1126,7 +1277,7 @@ onUnmounted(() => {
         </button>
 
         <button
-          v-if="canManage"
+          v-if="canManageActiveSheet"
           @click="handleOpenAddLink"
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-[#20242e] dark:hover:bg-[#282d3a] border border-slate-300 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white transition cursor-pointer"
         >
@@ -1212,17 +1363,53 @@ onUnmounted(() => {
         :key="s.id"
         @click="handleSelectSheet(s.id)"
         :class="[
-          'flex items-center gap-2 px-3 py-1.5 rounded-t-lg text-xs font-medium transition cursor-pointer border-t border-x',
+          'group flex items-center gap-2 px-3 py-1.5 rounded-t-lg text-xs font-medium transition cursor-pointer border-t border-x select-none',
           activeSheetId === s.id
             ? 'bg-white dark:bg-[#111317] border-slate-200 dark:border-slate-800 text-blue-600 dark:text-brand-400 font-bold shadow-sm'
             : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/30'
         ]"
       >
+        <!-- Visibility / Private indicator icon -->
+        <span
+          v-if="s.visibility === 'private'"
+          :title="s.isOwner ? 'Private sheet (Owner)' : 'Private sheet (Shared with you)'"
+          class="inline-flex items-center text-slate-400 dark:text-slate-500"
+        >
+          <Lock class="w-3 h-3" />
+        </span>
+        <span
+          v-else-if="s.sharesCount > 0"
+          :title="`Shared with ${s.sharesCount} user(s)`"
+          class="inline-flex items-center text-slate-400 dark:text-slate-500"
+        >
+          <Share2 class="w-3 h-3" />
+        </span>
+
         <span>{{ s.name }}</span>
+
+        <!-- Badge if read-only on this sheet -->
+        <span
+          v-if="!s.isOwner && s.userPermission === 'read' && !isAdmin"
+          class="text-[9px] uppercase px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono"
+        >
+          Read Only
+        </span>
+
+        <!-- Share / Access Settings Button (if owner or admin) -->
         <button
-          v-if="canManage && sheets.length > 1"
-          @click="promptDeleteSheet(s.id, $event)"
-          class="p-0.5 hover:text-rose-500 rounded transition cursor-pointer"
+          v-if="s.isOwner || isAdmin"
+          @click.stop="openShareModal(s)"
+          class="p-0.5 text-slate-400 hover:text-blue-500 rounded transition cursor-pointer opacity-70 hover:opacity-100"
+          title="Manage Sheet Access & Sharing"
+        >
+          <Share2 class="w-3 h-3" />
+        </button>
+
+        <!-- Delete Sheet Button (only if owner or admin, and more than 1 sheet) -->
+        <button
+          v-if="(s.isOwner || isAdmin) && sheets.length > 1"
+          @click.stop="promptDeleteSheet(s.id, $event)"
+          class="p-0.5 text-slate-400 hover:text-rose-500 rounded transition cursor-pointer opacity-70 hover:opacity-100"
           title="Delete Sheet"
         >
           <X class="w-3 h-3" />
@@ -1263,7 +1450,7 @@ onUnmounted(() => {
         </div>
 
         <!-- Multi-select Action Buttons -->
-        <div class="p-2.5 bg-slate-50 dark:bg-[#14161b] border-b border-slate-200 dark:border-slate-800 flex items-center gap-2">
+        <div v-if="canManageActiveSheet" class="p-2.5 bg-slate-50 dark:bg-[#14161b] border-b border-slate-200 dark:border-slate-800 flex items-center gap-2">
           <button
             @click="handleAddSelectedToCanvas"
             :disabled="selectedDiscoveredIds.length === 0"
@@ -1320,6 +1507,7 @@ onUnmounted(() => {
           >
             <div class="flex items-center gap-2 overflow-hidden flex-1 mr-2">
               <input
+                v-if="canManageActiveSheet"
                 type="checkbox"
                 :value="dev.id"
                 v-model="selectedDiscoveredIds"
@@ -1347,38 +1535,48 @@ onUnmounted(() => {
 
             <!-- Action Status -->
             <div class="shrink-0 flex items-center gap-1">
-              <button
-                v-if="isDeviceOnCanvas(dev.id)"
-                @click="handleRemoveDeviceFromCanvas(dev.id)"
-                class="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 hover:bg-rose-500/20 text-slate-600 dark:text-slate-400 hover:text-rose-400 text-[10px] font-mono transition"
-                title="Click to remove from canvas sheet (keeps in sidebar inventory)"
-              >
-                <span>Added</span>
-                <X class="w-2.5 h-2.5" />
-              </button>
-              <button
-                v-else
-                @click="handleAddDeviceToCanvas(dev)"
-                class="flex items-center gap-1 px-2 py-0.5 rounded border border-cyan-500/60 text-cyan-400 hover:bg-cyan-500/10 text-[10px] font-bold transition"
-                title="Add to canvas sheet"
-              >
-                <Plus class="w-2.5 h-2.5" />
-                <span>Add</span>
-              </button>
-              <button
-                @click="handleOpenEditDevice(dev)"
-                class="p-1 hover:text-white text-slate-500 transition"
-                title="Edit device info"
-              >
-                <Edit2 class="w-3 h-3" />
-              </button>
-              <button
-                @click="promptDeleteDevice(dev.id)"
-                class="p-1 hover:text-rose-400 text-slate-500 transition cursor-pointer"
-                title="Permanently delete device from inventory"
-              >
-                <Trash2 class="w-3 h-3" />
-              </button>
+              <template v-if="canManageActiveSheet">
+                <button
+                  v-if="isDeviceOnCanvas(dev.id)"
+                  @click="handleRemoveDeviceFromCanvas(dev.id)"
+                  class="flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 hover:bg-rose-500/20 text-slate-600 dark:text-slate-400 hover:text-rose-400 text-[10px] font-mono transition"
+                  title="Click to remove from canvas sheet (keeps in sidebar inventory)"
+                >
+                  <span>Added</span>
+                  <X class="w-2.5 h-2.5" />
+                </button>
+                <button
+                  v-else
+                  @click="handleAddDeviceToCanvas(dev)"
+                  class="flex items-center gap-1 px-2 py-0.5 rounded border border-cyan-500/60 text-cyan-400 hover:bg-cyan-500/10 text-[10px] font-bold transition"
+                  title="Add to canvas sheet"
+                >
+                  <Plus class="w-2.5 h-2.5" />
+                  <span>Add</span>
+                </button>
+                <button
+                  @click="handleOpenEditDevice(dev)"
+                  class="p-1 hover:text-slate-900 dark:hover:text-white text-slate-500 transition"
+                  title="Edit device info"
+                >
+                  <Edit2 class="w-3 h-3" />
+                </button>
+                <button
+                  @click="promptDeleteDevice(dev.id)"
+                  class="p-1 hover:text-rose-500 text-slate-500 transition cursor-pointer"
+                  title="Permanently delete device from inventory"
+                >
+                  <Trash2 class="w-3 h-3" />
+                </button>
+              </template>
+              <template v-else>
+                <span
+                  v-if="isDeviceOnCanvas(dev.id)"
+                  class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 text-[10px] font-mono"
+                >
+                  Added
+                </span>
+              </template>
             </div>
           </div>
         </div>
@@ -2221,45 +2419,255 @@ onUnmounted(() => {
     <!-- ================================================================= -->
     <div
       v-if="isSheetModalOpen"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 font-sans"
     >
-      <div class="bg-[#171a21] border border-slate-800 rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-2xl">
-        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div class="bg-white dark:bg-[#171a21] border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-2xl">
+        <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
           <div class="flex items-center gap-2">
-            <Layers class="w-4 h-4 text-emerald-400" />
-            <h3 class="text-sm font-bold text-white">Create Topology Sheet</h3>
+            <Layers class="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white">Create Topology Sheet</h3>
           </div>
-          <button @click="isSheetModalOpen = false" class="text-slate-400 hover:text-white">
+          <button @click="isSheetModalOpen = false" class="text-slate-400 hover:text-slate-900 dark:hover:text-white p-1 rounded transition cursor-pointer">
             <X class="w-4 h-4" />
           </button>
         </div>
 
         <div class="space-y-3 text-xs">
           <div>
-            <label class="block text-slate-400 mb-1">Sheet Name</label>
+            <label class="block text-slate-700 dark:text-slate-400 mb-1 font-medium">Sheet Name</label>
             <input
               v-model="newSheetName"
               required
-              class="w-full bg-[#111317] border border-slate-700 rounded-lg px-3 py-2 text-white"
+              class="w-full bg-slate-50 dark:bg-[#111317] border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:border-brand-500"
               placeholder="e.g. Servers, DMZ, Branch Office"
             />
           </div>
 
-          <div class="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+          <div>
+            <label class="block text-slate-700 dark:text-slate-400 mb-1 font-medium">Access & Visibility</label>
+            <select
+              v-model="newSheetVisibility"
+              class="w-full bg-slate-50 dark:bg-[#111317] border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:border-brand-500"
+            >
+              <option value="public">Public (Shared with all users)</option>
+              <option value="private">Private (Only you & explicitly shared users)</option>
+            </select>
+            <p class="text-[10px] text-slate-500 mt-1">
+              {{ newSheetVisibility === 'private' ? 'Only you and users you explicitly share with can view or manage this tab.' : 'All users with Network Topology permission can view this sheet.' }}
+            </p>
+          </div>
+
+          <div class="flex items-center justify-end gap-3 pt-3 border-t border-slate-200 dark:border-slate-800">
             <button
               type="button"
               @click="isSheetModalOpen = false"
-              class="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg text-xs"
+              class="px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-medium cursor-pointer transition"
             >
               Cancel
             </button>
             <button
               @click="handleCreateSheet"
-              class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg text-xs"
+              class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg text-xs transition cursor-pointer shadow-sm"
             >
               Create Sheet
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- MODAL: SHEET SHARING & ACCESS CONTROL -->
+    <!-- ================================================================= -->
+    <div
+      v-if="isShareModalOpen && selectedSheetForShare"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+    >
+      <div class="bg-white dark:bg-[#1b1e26] border border-slate-200 dark:border-slate-700/80 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col font-sans">
+        <!-- Modal Header -->
+        <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#20242e]">
+          <div class="flex items-center gap-3">
+            <div class="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+              <Share2 class="w-5 h-5" />
+            </div>
+            <div>
+              <h3 class="text-sm font-bold text-slate-900 dark:text-white tracking-wide">Sheet Access & Sharing</h3>
+              <p class="text-xs text-slate-500 dark:text-slate-400">
+                {{ selectedSheetForShare.name }} &bull; <span class="font-mono text-slate-600 dark:text-slate-300">Tab #{{ selectedSheetForShare.id }}</span>
+              </p>
+            </div>
+          </div>
+          <button
+            @click="isShareModalOpen = false"
+            class="p-1 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700/50 transition cursor-pointer"
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <div class="p-6 space-y-4">
+          <!-- Sheet Owner Banner -->
+          <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
+            <span class="text-slate-500 dark:text-slate-400 font-medium">Sheet Owner</span>
+            <span class="text-slate-700 dark:text-slate-300 font-semibold font-mono bg-white dark:bg-slate-800 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700">
+              @{{ selectedSheetForShare.ownerUsername || 'You' }} (Full Ownership)
+            </span>
+          </div>
+
+          <!-- Visibility Setting -->
+          <div class="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-[#14161b] space-y-2">
+            <div class="flex items-center justify-between">
+              <div>
+                <h4 class="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <component :is="selectedSheetForShare.visibility === 'private' ? Lock : Globe" class="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
+                  <span>Tab Visibility</span>
+                </h4>
+                <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  {{ selectedSheetForShare.visibility === 'private' ? 'Private: Visible only to owner, admin, and specifically assigned users.' : 'Public: Visible to all authorized system users with Network Topology access.' }}
+                </p>
+              </div>
+              <div class="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  @click="handleToggleSheetVisibility('public')"
+                  :class="[
+                    'px-2.5 py-1 text-xs rounded-lg font-medium transition cursor-pointer',
+                    selectedSheetForShare.visibility === 'public'
+                      ? 'bg-blue-600 text-white font-bold shadow-sm'
+                      : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+                  ]"
+                >
+                  Public
+                </button>
+                <button
+                  type="button"
+                  @click="handleToggleSheetVisibility('private')"
+                  :class="[
+                    'px-2.5 py-1 text-xs rounded-lg font-medium transition cursor-pointer',
+                    selectedSheetForShare.visibility === 'private'
+                      ? 'bg-blue-600 text-white font-bold shadow-sm'
+                      : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+                  ]"
+                >
+                  Private
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Grant Access Form -->
+          <div class="p-4 bg-slate-50 dark:bg-[#14161b] border border-slate-200 dark:border-slate-800/90 rounded-xl space-y-3">
+            <h4 class="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+              <Users class="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
+              <span>Grant Access to Specific User</span>
+            </h4>
+            
+            <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
+              <div class="sm:col-span-6 space-y-1">
+                <label class="block text-[11px] text-slate-600 dark:text-slate-400 font-medium">Select User</label>
+                <select
+                  v-model="shareForm.userId"
+                  class="w-full bg-white dark:bg-[#1b1e26] border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 transition"
+                >
+                  <option value="" disabled>Choose user...</option>
+                  <option
+                    v-for="u in availableUsers.filter(u => u.id !== authStore.user?.id && (!selectedSheetForShare.userId || u.id !== selectedSheetForShare.userId))"
+                    :key="u.id"
+                    :value="u.id"
+                  >
+                    {{ u.username }} ({{ u.role }})
+                  </option>
+                </select>
+              </div>
+
+              <div class="sm:col-span-4 space-y-1">
+                <label class="block text-[11px] text-slate-600 dark:text-slate-400 font-medium">Permission Level</label>
+                <select
+                  v-model="shareForm.permission"
+                  class="w-full bg-white dark:bg-[#1b1e26] border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 transition"
+                >
+                  <option value="read">Read Only (Inspect & Ping)</option>
+                  <option value="manage">Full Control (Edit Nodes & Links)</option>
+                </select>
+              </div>
+
+              <div class="sm:col-span-2 flex items-end">
+                <button
+                  type="button"
+                  @click="handleGrantSheetShare"
+                  :disabled="!shareForm.userId || isShareSubmitting"
+                  class="w-full py-2 px-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition shadow-sm flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw v-if="isShareSubmitting" class="w-3.5 h-3.5 animate-spin" />
+                  <span>{{ isShareSubmitting ? '...' : 'Grant' }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Active Shares List -->
+          <div class="space-y-2">
+            <h4 class="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+              Currently Shared Users ({{ activeSheetShares.length }})
+            </h4>
+
+            <div v-if="isShareLoading" class="p-6 text-center text-xs text-slate-500">
+              Loading access list...
+            </div>
+            <div v-else-if="activeSheetShares.length === 0" class="p-6 text-center text-xs text-slate-500 bg-slate-50 dark:bg-[#14161b] rounded-xl border border-slate-200 dark:border-slate-800">
+              {{ selectedSheetForShare.visibility === 'private' ? 'This sheet is private. Only you can view and edit it.' : 'This sheet is public. No specific user overrides currently assigned.' }}
+            </div>
+            <div v-else class="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              <div
+                v-for="s in activeSheetShares"
+                :key="s.id"
+                class="p-3 bg-slate-50 dark:bg-[#14161b] border border-slate-200 dark:border-slate-800/80 rounded-xl flex items-center justify-between gap-3 text-xs"
+              >
+                <div class="flex items-center gap-2.5">
+                  <div class="w-7 h-7 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-white font-bold text-xs flex items-center justify-center shrink-0">
+                    {{ s.username.substring(0, 2).toUpperCase() }}
+                  </div>
+                  <div>
+                    <p class="font-semibold text-slate-900 dark:text-white">@{{ s.username }}</p>
+                    <p class="text-[10px] text-slate-500 font-mono">
+                      Granted by @{{ s.sharedByUsername || 'Admin' }}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="flex items-center gap-2">
+                  <span
+                    :class="[
+                      'px-2 py-0.5 rounded text-[10px] font-semibold border uppercase',
+                      s.permission === 'manage'
+                        ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                    ]"
+                  >
+                    {{ s.permission === 'manage' ? 'Full Control' : 'Read Only' }}
+                  </span>
+                  <button
+                    @click="handleRevokeSheetShare(s.userId)"
+                    title="Revoke access"
+                    class="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-500/10 transition cursor-pointer"
+                  >
+                    <Trash2 class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Modal Footer -->
+        <div class="flex items-center justify-end px-6 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#20242e]">
+          <button
+            type="button"
+            @click="isShareModalOpen = false"
+            class="px-4 py-2 rounded-lg bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white text-xs font-semibold transition cursor-pointer"
+          >
+            Done
+          </button>
         </div>
       </div>
     </div>
