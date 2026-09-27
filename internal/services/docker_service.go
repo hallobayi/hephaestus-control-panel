@@ -246,9 +246,12 @@ func (s *DockerService) ListContainers(ctx context.Context, connectionID string,
 			}
 		}
 
-		// Default visibility for preexisting containers is public
+		// Preexisting or system containers without explicit ownership default to administrator and private visibility
+		if c.OwnerUsername == "" && c.UserID == nil {
+			c.OwnerUsername = "administrator"
+		}
 		if c.Visibility == "" {
-			c.Visibility = "public"
+			c.Visibility = "private"
 		}
 	}
 

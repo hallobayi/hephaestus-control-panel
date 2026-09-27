@@ -185,7 +185,6 @@ const canManageContainer = (c: DockerContainer): boolean => {
   if (!canManageInfrastructure.value) return false;
   if (c.isOwner) return true;
   if (c.userPermission === 'manage') return true;
-  if (c.visibility === 'public' || !c.visibility) return true;
   return false;
 };
 
@@ -409,7 +408,7 @@ const deployForm = ref({
   memoryLimitMb: '' as string | number,
   cpuLimit: '' as string | number,
   autoRemove: false,
-  visibility: 'public' as 'public' | 'private',
+  visibility: 'private' as 'public' | 'private',
 });
 const deploying = ref(false);
 
@@ -433,7 +432,7 @@ const editForm = ref({
   memoryLimitMb: '' as string | number,
   cpuLimit: '' as string | number,
   startAfter: true,
-  visibility: 'public' as 'public' | 'private',
+  visibility: 'private' as 'public' | 'private',
 });
 
 // Connection Form
@@ -532,7 +531,7 @@ const filteredContainers = computed(() => {
   }
 
   if (visibilityFilter.value === 'public') {
-    list = list.filter((c) => (c.visibility || 'public') === 'public');
+    list = list.filter((c) => c.visibility === 'public');
   } else if (visibilityFilter.value === 'private') {
     list = list.filter((c) => c.visibility === 'private' && (c.isOwner || isAdmin.value));
   } else if (visibilityFilter.value === 'shared') {
@@ -958,7 +957,7 @@ const handleDeploy = async () => {
         memoryLimitMb: '',
         cpuLimit: '',
         autoRemove: false,
-        visibility: 'public',
+        visibility: 'private',
       };
       await fetchData();
     } else {
@@ -1053,7 +1052,7 @@ const openEditModal = async (container: DockerContainer) => {
     memoryLimitMb: '',
     cpuLimit: '',
     startAfter: true,
-    visibility: (container.visibility as 'public' | 'private') || 'public',
+    visibility: (container.visibility as 'public' | 'private') || 'private',
   };
 
   try {
@@ -1687,7 +1686,7 @@ watch(selectedConnectionId, () => {
                 ]"
               >
                 <Globe class="w-3 h-3 text-slate-400" />
-                <span>Public ({{ containers.filter(c => (c.visibility || 'public') === 'public').length }})</span>
+                <span>Public ({{ containers.filter(c => c.visibility === 'public').length }})</span>
               </button>
               <button
                 @click="visibilityFilter = 'private'"
@@ -1699,7 +1698,7 @@ watch(selectedConnectionId, () => {
                 ]"
               >
                 <Lock class="w-3 h-3 text-amber-500" />
-                <span>Private ({{ containers.filter(c => c.visibility === 'private' && (c.isOwner || isAdmin)).length }})</span>
+                <span>Private ({{ containers.filter(c => (c.visibility === 'private' || !c.visibility) && (c.isOwner || isAdmin)).length }})</span>
               </button>
               <button
                 v-if="containers.some(c => (c.userPermission === 'read' || c.userPermission === 'manage') && !c.isOwner)"
@@ -1866,7 +1865,7 @@ watch(selectedConnectionId, () => {
 
                     <!-- Case 2: Private Container (Owner or Admin) -->
                     <span
-                      v-else-if="c.visibility === 'private'"
+                      v-else-if="c.visibility !== 'public'"
                       class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 font-mono"
                       :title="c.sharesCount && c.sharesCount > 0 ? `Private (Shared with ${c.sharesCount} user(s))` : 'Private: Visible only to creator and administrators'"
                     >
@@ -2028,10 +2027,10 @@ watch(selectedConnectionId, () => {
                         @click="toggleVisibility(c)"
                         :disabled="updatingVisibility[c.id]"
                         class="p-1.5 text-slate-400 hover:text-slate-900 dark:hover:text-white rounded hover:bg-slate-100 dark:hover:bg-[#182136] transition cursor-pointer disabled:opacity-50"
-                        :title="c.visibility === 'private' ? 'Make Public (Visible to all users)' : 'Make Private (Only you & admins)'"
+                        :title="c.visibility === 'public' ? 'Make Private (Only you & admins)' : 'Make Public (Visible to all users)'"
                       >
-                        <Lock v-if="c.visibility === 'private'" class="w-3.5 h-3.5 text-amber-500" />
-                        <Globe v-else class="w-3.5 h-3.5" />
+                        <Globe v-if="c.visibility === 'public'" class="w-3.5 h-3.5" />
+                        <Lock v-else class="w-3.5 h-3.5 text-amber-500" />
                       </button>
 
                       <!-- Edit button (Manage permission or Owner / Admin) -->
@@ -2044,9 +2043,9 @@ watch(selectedConnectionId, () => {
                         <Pencil class="w-3.5 h-3.5" />
                       </button>
 
-                      <!-- Delete button (Owner / Admin or public container with manage permission) -->
+                      <!-- Delete button (Owner / Admin only) -->
                       <button
-                        v-if="canAdministerContainer(c) || (c.visibility === 'public' && authStore.can('infrastructure', 'manage'))"
+                        v-if="canAdministerContainer(c)"
                         @click="confirmDeleteContainer(c)"
                         class="p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded hover:bg-slate-100 dark:hover:bg-[#182136] transition cursor-pointer"
                         title="Delete Container"
@@ -2519,6 +2518,32 @@ watch(selectedConnectionId, () => {
               <label
                 :class="[
                   'flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition',
+                  deployForm.visibility === 'private'
+                    ? 'border-amber-500/50 bg-amber-500/5 ring-1 ring-amber-500/20'
+                    : 'border-slate-200 dark:border-[#1b2234] bg-slate-50/50 dark:bg-[#141824]/50 hover:border-slate-300 dark:hover:border-slate-700'
+                ]"
+              >
+                <input
+                  type="radio"
+                  name="deployVisibility"
+                  value="private"
+                  v-model="deployForm.visibility"
+                  class="mt-0.5 text-amber-600 focus:ring-0 cursor-pointer"
+                />
+                <div class="space-y-0.5">
+                  <div class="flex items-center gap-1.5 text-xs font-bold text-slate-900 dark:text-white">
+                    <Lock class="w-3.5 h-3.5 text-amber-500" />
+                    <span>Private Container (Recommended)</span>
+                  </div>
+                  <p class="text-[11px] text-slate-500 dark:text-slate-400">
+                    Visible and manageable only by you (the creator) and system administrators.
+                  </p>
+                </div>
+              </label>
+
+              <label
+                :class="[
+                  'flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition',
                   deployForm.visibility === 'public'
                     ? 'border-blue-500/50 bg-blue-500/5 ring-1 ring-blue-500/20'
                     : 'border-slate-200 dark:border-[#1b2234] bg-slate-50/50 dark:bg-[#141824]/50 hover:border-slate-300 dark:hover:border-slate-700'
@@ -2537,33 +2562,7 @@ watch(selectedConnectionId, () => {
                     <span>Public Container</span>
                   </div>
                   <p class="text-[11px] text-slate-500 dark:text-slate-400">
-                    Visible and manageable by all authorized team members in this environment.
-                  </p>
-                </div>
-              </label>
-
-              <label
-                :class="[
-                  'flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition',
-                  deployForm.visibility === 'private'
-                    ? 'border-amber-500/50 bg-amber-500/5 ring-1 ring-amber-500/20'
-                    : 'border-slate-200 dark:border-[#1b2234] bg-slate-50/50 dark:bg-[#141824]/50 hover:border-slate-300 dark:hover:border-slate-700'
-                ]"
-              >
-                <input
-                  type="radio"
-                  name="deployVisibility"
-                  value="private"
-                  v-model="deployForm.visibility"
-                  class="mt-0.5 text-amber-600 focus:ring-0 cursor-pointer"
-                />
-                <div class="space-y-0.5">
-                  <div class="flex items-center gap-1.5 text-xs font-bold text-slate-900 dark:text-white">
-                    <Lock class="w-3.5 h-3.5 text-amber-500" />
-                    <span>Private Container</span>
-                  </div>
-                  <p class="text-[11px] text-slate-500 dark:text-slate-400">
-                    Visible and manageable only by you (the creator) and system administrators.
+                    Visible to all authorized team members in this environment.
                   </p>
                 </div>
               </label>
@@ -3453,6 +3452,32 @@ watch(selectedConnectionId, () => {
                 <label
                   :class="[
                     'flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition',
+                    editForm.visibility === 'private'
+                      ? 'border-amber-500/50 bg-amber-500/5 ring-1 ring-amber-500/20'
+                      : 'border-slate-200 dark:border-[#1b2234] bg-slate-50/50 dark:bg-[#141824]/50 hover:border-slate-300 dark:hover:border-slate-700'
+                  ]"
+                >
+                  <input
+                    type="radio"
+                    name="editVisibility"
+                    value="private"
+                    v-model="editForm.visibility"
+                    class="mt-0.5 text-amber-600 focus:ring-0 cursor-pointer"
+                  />
+                  <div class="space-y-0.5">
+                    <div class="flex items-center gap-1.5 text-xs font-bold text-slate-900 dark:text-white">
+                      <Lock class="w-3.5 h-3.5 text-amber-500" />
+                      <span>Private Container (Recommended)</span>
+                    </div>
+                    <p class="text-[11px] text-slate-500 dark:text-slate-400">
+                      Visible and manageable only by you (the creator) and system administrators.
+                    </p>
+                  </div>
+                </label>
+
+                <label
+                  :class="[
+                    'flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition',
                     editForm.visibility === 'public'
                       ? 'border-blue-500/50 bg-blue-500/5 ring-1 ring-blue-500/20'
                       : 'border-slate-200 dark:border-[#1b2234] bg-slate-50/50 dark:bg-[#141824]/50 hover:border-slate-300 dark:hover:border-slate-700'
@@ -3471,33 +3496,7 @@ watch(selectedConnectionId, () => {
                       <span>Public Container</span>
                     </div>
                     <p class="text-[11px] text-slate-500 dark:text-slate-400">
-                      Visible and manageable by all authorized team members in this environment.
-                    </p>
-                  </div>
-                </label>
-
-                <label
-                  :class="[
-                    'flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition',
-                    editForm.visibility === 'private'
-                      ? 'border-amber-500/50 bg-amber-500/5 ring-1 ring-amber-500/20'
-                      : 'border-slate-200 dark:border-[#1b2234] bg-slate-50/50 dark:bg-[#141824]/50 hover:border-slate-300 dark:hover:border-slate-700'
-                  ]"
-                >
-                  <input
-                    type="radio"
-                    name="editVisibility"
-                    value="private"
-                    v-model="editForm.visibility"
-                    class="mt-0.5 text-amber-600 focus:ring-0 cursor-pointer"
-                  />
-                  <div class="space-y-0.5">
-                    <div class="flex items-center gap-1.5 text-xs font-bold text-slate-900 dark:text-white">
-                      <Lock class="w-3.5 h-3.5 text-amber-500" />
-                      <span>Private Container</span>
-                    </div>
-                    <p class="text-[11px] text-slate-500 dark:text-slate-400">
-                      Visible and manageable only by you (the creator) and system administrators.
+                      Visible to all authorized team members in this environment.
                     </p>
                   </div>
                 </label>

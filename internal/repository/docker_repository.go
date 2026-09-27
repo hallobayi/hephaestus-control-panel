@@ -50,7 +50,7 @@ func (r *DockerRepository) ensureTable(ctx context.Context, pool *pgxpool.Pool) 
 			container_name VARCHAR(255) NOT NULL,
 			user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
 			username VARCHAR(100),
-			visibility VARCHAR(20) NOT NULL DEFAULT 'public',
+			visibility VARCHAR(20) NOT NULL DEFAULT 'private',
 			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY(connection_id, container_id)
@@ -385,7 +385,7 @@ func (r *DockerRepository) SaveContainerMetadata(ctx context.Context, meta domai
 	r.ensureTable(ctx, pool)
 
 	if meta.Visibility == "" {
-		meta.Visibility = "public"
+		meta.Visibility = "private"
 	}
 
 	query := `

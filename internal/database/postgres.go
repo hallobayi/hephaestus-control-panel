@@ -352,11 +352,14 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 			container_name VARCHAR(255) NOT NULL,
 			user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
 			username VARCHAR(100),
-			visibility VARCHAR(20) NOT NULL DEFAULT 'public',
+			visibility VARCHAR(20) NOT NULL DEFAULT 'private',
 			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY(connection_id, container_id)
 		);
+		ALTER TABLE docker_container_metadata ALTER COLUMN visibility SET DEFAULT 'private';
+		UPDATE docker_container_metadata SET visibility = 'private' WHERE visibility = 'public' OR visibility IS NULL OR visibility = '';
+		UPDATE docker_container_metadata SET username = 'administrator' WHERE username IS NULL OR username = '';
 		CREATE INDEX IF NOT EXISTS idx_docker_container_meta_user ON docker_container_metadata(user_id);
 
 		CREATE TABLE IF NOT EXISTS docker_container_shares (

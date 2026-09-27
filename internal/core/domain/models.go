@@ -711,8 +711,8 @@ type DeployContainerRequest struct {
 }
 
 func (r *DeployContainerRequest) Normalize() {
-	if r.Visibility == "" {
-		r.Visibility = "public"
+	if r.Visibility != "public" {
+		r.Visibility = "private"
 	}
 	if len(r.PortBindings) == 0 && len(r.Ports) > 0 {
 		r.PortBindings = r.Ports

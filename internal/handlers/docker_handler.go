@@ -369,33 +369,36 @@ func (h *DockerHandler) canAccessContainer(c *gin.Context, connectionID, contain
 	}
 	for _, ct := range containers {
 		if ct.ID == containerID || (len(containerID) >= 8 && strings.HasPrefix(ct.ID, containerID)) {
-			if ct.Visibility == "private" {
-				// Creator has full control
-				if ct.UserID != nil && *ct.UserID == u.ID {
-					return true
-				}
-				if ct.OwnerUsername != "" && strings.EqualFold(ct.OwnerUsername, u.Username) {
-					return true
-				}
+			// Creator/Owner has full control
+			if ct.UserID != nil && *ct.UserID == u.ID {
+				return true
+			}
+			if ct.OwnerUsername != "" && strings.EqualFold(ct.OwnerUsername, u.Username) {
+				return true
+			}
 
-				// Check if shared with current user
-				shares, err := h.dockerRepo.ListShares(c.Request.Context(), connectionID, ct.ID)
-				if err == nil {
-					for _, s := range shares {
-						if s.UserID == u.ID {
-							if requiredPermission == "read" {
-								return true
-							}
-							return s.Permission == "manage"
+			// Check if shared with current user
+			shares, err := h.dockerRepo.ListShares(c.Request.Context(), connectionID, ct.ID)
+			if err == nil {
+				for _, s := range shares {
+					if s.UserID == u.ID {
+						if requiredPermission == "read" {
+							return true
 						}
+						return s.Permission == "manage"
 					}
 				}
-				return false
 			}
-			return true
+
+			// Public container allows read-only access (inspect, logs, stats), not manage/edit/delete
+			if ct.Visibility == "public" && requiredPermission == "read" {
+				return true
+			}
+
+			return false
 		}
 	}
-	return true
+	return false
 }
 
 func (h *DockerHandler) ListContainers(c *gin.Context) {
@@ -455,7 +458,7 @@ func (h *DockerHandler) ListContainers(c *gin.Context) {
 					}
 				}
 			}
-			if userPerm == "" && (ct.Visibility == "public" || ct.Visibility == "") {
+			if userPerm == "" && ct.Visibility == "public" {
 				userPerm = "public"
 			}
 		}
@@ -465,12 +468,12 @@ func (h *DockerHandler) ListContainers(c *gin.Context) {
 		// 1. Superadmin / Admin sees all containers
 		// 2. Container creator always sees their own container
 		// 3. Containers explicitly shared with user (read or manage)
-		// 4. Public containers
+		// 4. Containers explicitly set to public
 		if currentUser != nil && currentUser.IsAdmin() {
 			filtered = append(filtered, ct)
 		} else if isOwner || userPerm == "read" || userPerm == "manage" {
 			filtered = append(filtered, ct)
-		} else if ct.Visibility == "public" || ct.Visibility == "" {
+		} else if ct.Visibility == "public" {
 			filtered = append(filtered, ct)
 		}
 	}
