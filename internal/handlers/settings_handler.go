@@ -70,16 +70,26 @@ func (h *SettingsHandler) ListUsers(c *gin.Context) {
 
 func (h *SettingsHandler) CreateUser(c *gin.Context) {
 	var req struct {
-		Username string `json:"username" binding:"required"`
-		Password string `json:"password" binding:"required"`
-		Role     string `json:"role"`
+		Username            string `json:"username" binding:"required"`
+		Password            string `json:"password" binding:"required"`
+		Role                string `json:"role"`
+		ForcePasswordChange bool   `json:"forcePasswordChange"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input"})
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input: username and password are required"})
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Username cannot be empty"})
+		return
+	}
+	if len(req.Password) < 6 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Password must be at least 6 characters"})
 		return
 	}
 	if req.Role == "" {
-		req.Role = "operator"
+		req.Role = "OPERATOR"
 	}
 
 	hash, err := config.HashPassword(req.Password)
@@ -88,12 +98,98 @@ func (h *SettingsHandler) CreateUser(c *gin.Context) {
 		return
 	}
 
-	user, err := h.userRepo.Create(c.Request.Context(), req.Username, hash, req.Role, false)
+	user, err := h.userRepo.Create(c.Request.Context(), req.Username, hash, req.Role, req.ForcePasswordChange)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate") || strings.Contains(strings.ToLower(err.Error()), "unique") {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Username already exists"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "User created.", "data": user})
+
+	currentUserID := c.GetInt("userId")
+	adminUsername := c.GetString("username")
+	details := fmt.Sprintf("Admin '%s' created user '%s' (role: %s)", adminUsername, user.Username, user.Role)
+	_ = h.userRepo.LogActivity(c.Request.Context(), "Users", "Create", details, "success", &currentUserID)
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "User created successfully.", "data": user})
+}
+
+func (h *SettingsHandler) UpdateUser(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid user ID"})
+		return
+	}
+
+	var req struct {
+		Username            string `json:"username"`
+		Password            string `json:"password"`
+		Role                string `json:"role"`
+		ForcePasswordChange *bool  `json:"forcePasswordChange"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input"})
+		return
+	}
+
+	req.Username = strings.TrimSpace(req.Username)
+	req.Role = strings.TrimSpace(req.Role)
+
+	existing, err := h.userRepo.GetByID(c.Request.Context(), id)
+	if err != nil || existing == nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": "User not found"})
+		return
+	}
+
+	currentUserID := c.GetInt("userId")
+	// If updating own account and is ADMIN, do not permit removing ADMIN role
+	if id == currentUserID && (existing.IsAdmin() || domain.IsAdminRole(existing.Role)) {
+		if req.Role != "" && !domain.IsAdminRole(req.Role) {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "You cannot remove ADMIN privileges from your own account"})
+			return
+		}
+	}
+
+	var passwordHash string
+	if req.Password != "" {
+		if len(req.Password) < 6 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Password must be at least 6 characters"})
+			return
+		}
+		hash, err := config.HashPassword(req.Password)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Failed to hash password"})
+			return
+		}
+		passwordHash = hash
+	}
+
+	if err := h.userRepo.UpdateUser(c.Request.Context(), id, req.Username, passwordHash, req.Role, req.ForcePasswordChange); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate") || strings.Contains(strings.ToLower(err.Error()), "unique") {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Username is already taken by another account"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	// Invalidate active sessions if password was updated (except current user if editing self)
+	if passwordHash != "" && id != currentUserID {
+		_ = h.userRepo.DeleteUserSessions(c.Request.Context(), id)
+	}
+
+	adminUsername := c.GetString("username")
+	details := fmt.Sprintf("Admin '%s' updated user ID %d ('%s')", adminUsername, id, existing.Username)
+	_ = h.userRepo.LogActivity(c.Request.Context(), "Users", "Update", details, "success", &currentUserID)
+
+	updatedUser, _ := h.userRepo.GetByID(c.Request.Context(), id)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "User updated successfully.",
+		"data":    updatedUser,
+	})
 }
 
 func (h *SettingsHandler) DeleteUser(c *gin.Context) {
@@ -104,10 +200,21 @@ func (h *SettingsHandler) DeleteUser(c *gin.Context) {
 		return
 	}
 
+	target, _ := h.userRepo.GetByID(c.Request.Context(), id)
+	targetName := fmt.Sprintf("ID #%d", id)
+	if target != nil {
+		targetName = target.Username
+	}
+
 	if err := h.userRepo.Delete(c.Request.Context(), id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
+
+	adminUsername := c.GetString("username")
+	details := fmt.Sprintf("Admin '%s' deleted user '%s'", adminUsername, targetName)
+	_ = h.userRepo.LogActivity(c.Request.Context(), "Users", "Delete", details, "success", &currentUserID)
+
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "User deleted."})
 }
 

@@ -548,9 +548,39 @@ const loadingUsers = ref(false);
 const loadingRoles = ref(false);
 
 const isUserModalOpen = ref(false);
-const newUserForm = ref({ username: '', password: '', role: 'OPERATOR' });
+const newUserForm = ref({ username: '', password: '', role: 'OPERATOR', forcePasswordChange: false });
 const userActionLoading = ref(false);
 const userErrorMsg = ref('');
+
+// Edit User State
+const isEditUserModalOpen = ref(false);
+const editingUser = ref<UserItem | null>(null);
+const editUserForm = ref({
+  id: 0,
+  username: '',
+  password: '',
+  confirmPassword: '',
+  role: 'OPERATOR',
+  forcePasswordChange: false,
+});
+const editUserLoading = ref(false);
+const editUserErrorMsg = ref('');
+
+// Standard Delete User Confirmation Modal State
+const userToDelete = ref<UserItem | null>(null);
+const deletingUser = ref(false);
+
+// User Management Feedback Banner State
+const userNotification = ref<{ message: string; type: 'success' | 'error' } | null>(null);
+let userNotificationTimer: any = null;
+
+const showUserNotification = (message: string, type: 'success' | 'error' = 'success') => {
+  userNotification.value = { message, type };
+  if (userNotificationTimer) clearTimeout(userNotificationTimer);
+  userNotificationTimer = setTimeout(() => {
+    userNotification.value = null;
+  }, 3000);
+};
 
 const isRoleModalOpen = ref(false);
 const editingRole = ref<SystemRole | null>(null);
@@ -595,8 +625,12 @@ const fetchRoles = async () => {
 };
 
 const createUser = async () => {
-  if (!newUserForm.value.username || !newUserForm.value.password) {
+  if (!newUserForm.value.username.trim() || !newUserForm.value.password) {
     userErrorMsg.value = 'Username and password are required.';
+    return;
+  }
+  if (newUserForm.value.password.length < 6) {
+    userErrorMsg.value = 'Password must be at least 6 characters.';
     return;
   }
   userActionLoading.value = true;
@@ -605,7 +639,8 @@ const createUser = async () => {
     const res = await axios.post('/api/v1/settings/users', newUserForm.value);
     if (res.data && res.data.success) {
       isUserModalOpen.value = false;
-      newUserForm.value = { username: '', password: '', role: roles.value[0]?.name || 'OPERATOR' };
+      newUserForm.value = { username: '', password: '', role: roles.value[0]?.name || 'OPERATOR', forcePasswordChange: false };
+      showUserNotification('User created successfully.', 'success');
       fetchUsers();
     } else {
       userErrorMsg.value = res.data?.error || 'Failed to create user.';
@@ -617,17 +652,86 @@ const createUser = async () => {
   }
 };
 
-const deleteUser = async (user: UserItem) => {
-  if (!confirm(`Are you sure you want to delete user "${user.username}"?`)) return;
+const openEditUserModal = (user: UserItem) => {
+  editingUser.value = user;
+  editUserForm.value = {
+    id: user.id,
+    username: user.username,
+    password: '',
+    confirmPassword: '',
+    role: user.role || 'OPERATOR',
+    forcePasswordChange: Boolean(user.forcePasswordChange),
+  };
+  editUserErrorMsg.value = '';
+  isEditUserModalOpen.value = true;
+};
+
+const saveEditUser = async () => {
+  if (!editUserForm.value.username.trim()) {
+    editUserErrorMsg.value = 'Username cannot be empty.';
+    return;
+  }
+  if (editUserForm.value.password) {
+    if (editUserForm.value.password.length < 6) {
+      editUserErrorMsg.value = 'Password must be at least 6 characters.';
+      return;
+    }
+    if (editUserForm.value.password !== editUserForm.value.confirmPassword) {
+      editUserErrorMsg.value = 'Passwords do not match.';
+      return;
+    }
+  }
+
+  editUserLoading.value = true;
+  editUserErrorMsg.value = '';
   try {
-    const res = await axios.delete(`/api/v1/settings/users/${user.id}`);
+    const payload: any = {
+      username: editUserForm.value.username.trim(),
+      role: editUserForm.value.role,
+      forcePasswordChange: editUserForm.value.forcePasswordChange,
+    };
+    if (editUserForm.value.password) {
+      payload.password = editUserForm.value.password;
+    }
+
+    const res = await axios.put(`/api/v1/settings/users/${editUserForm.value.id}`, payload);
     if (res.data && res.data.success) {
-      fetchUsers();
+      isEditUserModalOpen.value = false;
+      showUserNotification('User account updated successfully.', 'success');
+      await fetchUsers();
+      if (editUserForm.value.id === authStore.user?.id) {
+        await authStore.fetchUser();
+      }
     } else {
-      alert(res.data?.error || 'Failed to delete user.');
+      editUserErrorMsg.value = res.data?.error || 'Failed to update user.';
     }
   } catch (err: any) {
-    alert(err.response?.data?.error || 'Failed to delete user.');
+    editUserErrorMsg.value = err.response?.data?.error || err.message || 'Failed to update user.';
+  } finally {
+    editUserLoading.value = false;
+  }
+};
+
+const openDeleteUserModal = (user: UserItem) => {
+  userToDelete.value = user;
+};
+
+const executeDeleteUser = async () => {
+  if (!userToDelete.value) return;
+  deletingUser.value = true;
+  try {
+    const res = await axios.delete(`/api/v1/settings/users/${userToDelete.value.id}`);
+    if (res.data && res.data.success) {
+      showUserNotification(`User "${userToDelete.value.username}" deleted successfully.`, 'success');
+      userToDelete.value = null;
+      await fetchUsers();
+    } else {
+      showUserNotification(res.data?.error || 'Failed to delete user.', 'error');
+    }
+  } catch (err: any) {
+    showUserNotification(err.response?.data?.error || err.message || 'Failed to delete user.', 'error');
+  } finally {
+    deletingUser.value = false;
   }
 };
 
@@ -636,12 +740,13 @@ const updateUserRole = async (user: UserItem, newRole: string) => {
     const res = await axios.put(`/api/v1/settings/users/${user.id}/role`, { role: newRole });
     if (res.data && res.data.success) {
       user.role = newRole;
+      showUserNotification(`Role updated to ${newRole} for user "${user.username}".`, 'success');
       fetchUsers();
     } else {
-      alert(res.data?.error || 'Failed to update user role.');
+      showUserNotification(res.data?.error || 'Failed to update user role.', 'error');
     }
   } catch (err: any) {
-    alert(err.response?.data?.error || 'Failed to update user role.');
+    showUserNotification(err.response?.data?.error || err.message || 'Failed to update user role.', 'error');
   }
 };
 
@@ -1035,6 +1140,26 @@ onUnmounted(() => {
           </button>
         </div>
 
+        <!-- User Management Feedback Banner -->
+        <div
+          v-if="userNotification"
+          :class="[
+            'p-3 rounded-xl text-xs flex items-center justify-between gap-2 border animate-in fade-in transition',
+            userNotification.type === 'success'
+              ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30'
+              : 'bg-rose-500/10 text-rose-700 dark:text-rose-400 border-rose-500/30'
+          ]"
+        >
+          <div class="flex items-center gap-2">
+            <CheckCircle2 v-if="userNotification.type === 'success'" class="w-4 h-4 shrink-0" />
+            <AlertTriangle v-else class="w-4 h-4 shrink-0" />
+            <span>{{ userNotification.message }}</span>
+          </div>
+          <button @click="userNotification = null" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer">
+            <X class="w-3.5 h-3.5" />
+          </button>
+        </div>
+
         <div class="bg-white dark:bg-[#1b1e26] border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm">
           <div v-if="loadingUsers" class="p-8 text-center text-xs text-slate-400">
             <RotateCw class="w-5 h-5 animate-spin mx-auto mb-2 text-blue-500" />
@@ -1063,6 +1188,9 @@ onUnmounted(() => {
                         <span v-if="u.id === authStore.user?.id" class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300">
                           YOU
                         </span>
+                        <span v-if="u.forcePasswordChange" class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
+                          RESET PENDING
+                        </span>
                       </div>
                       <span class="text-[10px] text-slate-400 font-mono">UID: #{{ u.id }}</span>
                     </div>
@@ -1074,7 +1202,7 @@ onUnmounted(() => {
                       :value="u.role"
                       @change="(e: any) => updateUserRole(u, e.target.value)"
                       :disabled="u.id === authStore.user?.id && u.role === 'ADMIN'"
-                      class="bg-slate-100 dark:bg-[#14161b] border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 transition"
+                      class="bg-slate-100 dark:bg-[#14161b] border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 transition cursor-pointer"
                     >
                       <option v-for="r in roles" :key="r.id" :value="r.name">
                         {{ r.name }}
@@ -1101,15 +1229,24 @@ onUnmounted(() => {
                   {{ u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '-' }}
                 </td>
                 <td class="p-3 text-right">
-                  <button
-                    v-if="u.id !== authStore.user?.id"
-                    @click="deleteUser(u)"
-                    class="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition"
-                    title="Delete User"
-                  >
-                    <Trash2 class="w-4 h-4" />
-                  </button>
-                  <span v-else class="text-[10px] text-slate-400 italic">Self</span>
+                  <div class="flex items-center justify-end gap-1">
+                    <button
+                      @click="openEditUserModal(u)"
+                      class="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                      title="Edit User Account"
+                    >
+                      <Edit3 class="w-4 h-4" />
+                    </button>
+                    <button
+                      v-if="u.id !== authStore.user?.id"
+                      @click="openDeleteUserModal(u)"
+                      class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition cursor-pointer"
+                      title="Delete User Account"
+                    >
+                      <Trash2 class="w-4 h-4" />
+                    </button>
+                    <span v-else class="text-[10px] text-slate-400 dark:text-slate-500 italic px-1 select-none">Self</span>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -1594,24 +1731,183 @@ onUnmounted(() => {
             </select>
           </div>
 
+          <div>
+            <label class="flex items-center gap-2 cursor-pointer select-none pt-1">
+              <input
+                type="checkbox"
+                v-model="newUserForm.forcePasswordChange"
+                class="rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
+              />
+              <span class="text-slate-700 dark:text-slate-300 font-medium text-xs">
+                Require user to change password on next login
+              </span>
+            </label>
+          </div>
+
           <div class="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
             <button
               type="button"
               @click="isUserModalOpen = false"
-              class="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 font-semibold"
+              class="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 font-semibold cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
               :disabled="userActionLoading"
-              class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg flex items-center gap-1.5 transition disabled:opacity-50"
+              class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
             >
               <RotateCw v-if="userActionLoading" class="w-3.5 h-3.5 animate-spin" />
               <span>Create Account</span>
             </button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- ============================================================= -->
+    <!-- MODAL: EDIT USER -->
+    <!-- ============================================================= -->
+    <div
+      v-if="isEditUserModalOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+    >
+      <div class="bg-white dark:bg-[#1b1e26] border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl">
+        <div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+          <div class="flex items-center gap-2">
+            <Edit3 class="w-4 h-4 text-blue-500" />
+            <h3 class="text-sm font-bold text-slate-900 dark:text-white">Edit User Account</h3>
+          </div>
+          <button @click="isEditUserModalOpen = false" class="text-slate-400 hover:text-slate-200 cursor-pointer">
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <div v-if="editUserErrorMsg" class="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs flex items-center gap-2">
+          <AlertTriangle class="w-4 h-4 shrink-0" />
+          <span>{{ editUserErrorMsg }}</span>
+        </div>
+
+        <form @submit.prevent="saveEditUser" class="space-y-3.5 text-xs">
+          <div>
+            <label class="block text-slate-700 dark:text-slate-300 mb-1 font-semibold">Username</label>
+            <input
+              v-model="editUserForm.username"
+              required
+              placeholder="e.g. jdoe_ops"
+              class="w-full bg-slate-50 dark:bg-[#14161b] border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div>
+            <label class="block text-slate-700 dark:text-slate-300 mb-1 font-semibold">Assign System Role</label>
+            <select
+              v-model="editUserForm.role"
+              :disabled="editingUser?.id === authStore.user?.id && editingUser?.role === 'ADMIN'"
+              class="w-full bg-slate-50 dark:bg-[#14161b] border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-semibold focus:outline-none focus:border-blue-500 disabled:opacity-50 cursor-pointer"
+            >
+              <option v-for="r in roles" :key="r.id" :value="r.name">
+                {{ r.name }} - {{ r.description }}
+              </option>
+            </select>
+            <p v-if="editingUser?.id === authStore.user?.id && editingUser?.role === 'ADMIN'" class="text-[10px] text-slate-400 mt-1 italic">
+              You cannot remove ADMIN privileges from your own account.
+            </p>
+          </div>
+
+          <div class="border-t border-slate-200 dark:border-slate-800 pt-3 space-y-3">
+            <div>
+              <label class="block text-slate-700 dark:text-slate-300 mb-1 font-semibold flex items-center justify-between">
+                <span>Reset Password</span>
+                <span class="text-[10px] text-slate-400 font-normal">Leave blank to keep existing</span>
+              </label>
+              <input
+                v-model="editUserForm.password"
+                type="password"
+                autocomplete="new-password"
+                placeholder="Enter new password (min. 6 characters)"
+                class="w-full bg-slate-50 dark:bg-[#14161b] border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div v-if="editUserForm.password">
+              <label class="block text-slate-700 dark:text-slate-300 mb-1 font-semibold">Confirm New Password</label>
+              <input
+                v-model="editUserForm.confirmPassword"
+                type="password"
+                autocomplete="new-password"
+                placeholder="Re-enter new password"
+                class="w-full bg-slate-50 dark:bg-[#14161b] border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white font-mono focus:outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div class="pt-1">
+              <label class="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  v-model="editUserForm.forcePasswordChange"
+                  class="rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
+                />
+                <span class="text-slate-700 dark:text-slate-300 font-medium text-xs">
+                  Require user to change password on next login
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+            <button
+              type="button"
+              @click="isEditUserModalOpen = false"
+              class="px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 font-semibold cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              :disabled="editUserLoading"
+              class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+            >
+              <RotateCw v-if="editUserLoading" class="w-3.5 h-3.5 animate-spin" />
+              <span>Save Changes</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- ============================================================= -->
+    <!-- MODAL: DELETE USER CONFIRMATION (AGENTS.md Standard) -->
+    <!-- ============================================================= -->
+    <div
+      v-if="userToDelete"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 dark:bg-black/80 backdrop-blur-sm animate-in fade-in"
+    >
+      <div class="bg-white dark:bg-[#111624] border border-slate-200 dark:border-[#1f283d] rounded-2xl w-full max-w-sm shadow-2xl p-5 space-y-4 text-center">
+        <div class="w-12 h-12 rounded-full bg-rose-500/10 text-rose-500 flex items-center justify-center mx-auto">
+          <Trash2 class="w-6 h-6" />
+        </div>
+        <div class="space-y-1">
+          <h3 class="text-sm font-bold text-slate-900 dark:text-white">Delete User Account?</h3>
+          <p class="text-xs text-slate-500 dark:text-slate-400">
+            Are you sure you want to remove <strong class="text-slate-800 dark:text-slate-200">{{ userToDelete.username }}</strong>? This action cannot be undone.
+          </p>
+        </div>
+        <div class="flex items-center justify-center gap-2 pt-2">
+          <button
+            @click="userToDelete = null"
+            class="px-3 py-1.5 text-xs text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            @click="executeDeleteUser"
+            :disabled="deletingUser"
+            class="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold transition cursor-pointer disabled:opacity-50"
+          >
+            {{ deletingUser ? 'Deleting...' : 'Confirm Delete' }}
+          </button>
+        </div>
       </div>
     </div>
 

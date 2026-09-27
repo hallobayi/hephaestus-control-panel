@@ -141,6 +141,29 @@ func (r *UserRepository) UpdatePassword(ctx context.Context, id int, passwordHas
 	return err
 }
 
+func (r *UserRepository) UpdateUser(ctx context.Context, id int, username string, passwordHash string, role string, forceChange *bool) error {
+	pool, err := database.GetPool()
+	if err != nil {
+		return err
+	}
+
+	query := `UPDATE users SET 
+		username = COALESCE(NULLIF($1, ''), username),
+		role = COALESCE(NULLIF($2, ''), role),
+		password_hash = CASE WHEN $3 <> '' THEN $3 ELSE password_hash END,
+		force_password_change = COALESCE($4, force_password_change)
+		WHERE id = $5`
+
+	res, err := pool.Exec(ctx, query, strings.TrimSpace(username), strings.TrimSpace(role), passwordHash, forceChange, id)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
 func (r *UserRepository) Delete(ctx context.Context, id int) error {
 	pool, err := database.GetPool()
 	if err != nil {

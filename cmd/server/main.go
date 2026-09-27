@@ -353,6 +353,7 @@ func main() {
 		// User & Role Management (Exclusive to ADMIN role)
 		api.GET("/settings/users", middleware.RequireRole("ADMIN"), settingsHandler.ListUsers)
 		api.POST("/settings/users", middleware.RequireRole("ADMIN"), settingsHandler.CreateUser)
+		api.PUT("/settings/users/:id", middleware.RequireRole("ADMIN"), settingsHandler.UpdateUser)
 		api.PUT("/settings/users/:id/role", middleware.RequireRole("ADMIN"), settingsHandler.UpdateUserRole)
 		api.DELETE("/settings/users/:id", middleware.RequireRole("ADMIN"), settingsHandler.DeleteUser)
 		api.GET("/settings/roles", middleware.RequireRole("ADMIN"), settingsHandler.ListRoles)
