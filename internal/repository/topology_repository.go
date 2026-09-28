@@ -33,7 +33,7 @@ func (r *TopologyRepository) ListSheets(ctx context.Context, userID int, userRol
 			SELECT 
 				s.id, s.name, s.sort_order, s.user_id, 
 				COALESCE(u.username, 'Admin') AS owner_username,
-				COALESCE(s.visibility, 'public') AS visibility,
+				COALESCE(s.visibility, 'private') AS visibility,
 				s.created_at, s.updated_at,
 				(SELECT COUNT(*) FROM topology_sheet_shares WHERE sheet_id = s.id) AS shares_count
 			FROM topology_sheets s
@@ -46,14 +46,14 @@ func (r *TopologyRepository) ListSheets(ctx context.Context, userID int, userRol
 			SELECT 
 				s.id, s.name, s.sort_order, s.user_id, 
 				COALESCE(u.username, 'Admin') AS owner_username,
-				COALESCE(s.visibility, 'public') AS visibility,
+				COALESCE(s.visibility, 'private') AS visibility,
 				s.created_at, s.updated_at,
 				(SELECT COUNT(*) FROM topology_sheet_shares WHERE sheet_id = s.id) AS shares_count,
 				COALESCE(tss.permission, '') AS share_perm
 			FROM topology_sheets s
 			LEFT JOIN users u ON s.user_id = u.id
 			LEFT JOIN topology_sheet_shares tss ON s.id = tss.sheet_id AND tss.user_id = $1
-			WHERE COALESCE(s.visibility, 'public') = 'public'
+			WHERE s.visibility = 'public'
 			   OR s.user_id = $1
 			   OR tss.user_id = $1
 			ORDER BY s.sort_order ASC, s.id ASC
@@ -85,8 +85,10 @@ func (r *TopologyRepository) ListSheets(ctx context.Context, userID int, userRol
 				s.UserPermission = "manage"
 			} else if sharePerm != "" {
 				s.UserPermission = sharePerm
-			} else {
+			} else if s.Visibility == "public" {
 				s.UserPermission = "public"
+			} else {
+				s.UserPermission = "read"
 			}
 		}
 		sheets = append(sheets, s)
@@ -102,8 +104,8 @@ func (r *TopologyRepository) CreateSheet(ctx context.Context, name string, sortO
 	if err != nil {
 		return nil, err
 	}
-	if visibility != "private" {
-		visibility = "public"
+	if visibility != "public" {
+		visibility = "private"
 	}
 	var s domain.TopologySheet
 	s.Name = name
@@ -139,8 +141,8 @@ func (r *TopologyRepository) UpdateSheetVisibility(ctx context.Context, id int, 
 	if err != nil {
 		return err
 	}
-	if visibility != "private" {
-		visibility = "public"
+	if visibility != "public" {
+		visibility = "private"
 	}
 	_, err = pool.Exec(ctx, `UPDATE topology_sheets SET visibility = $1, updated_at = NOW() WHERE id = $2`, visibility, id)
 	return err
@@ -168,7 +170,7 @@ func (r *TopologyRepository) CheckSheetAccess(ctx context.Context, sheetID int, 
 	query := `
 		SELECT 
 			s.user_id,
-			COALESCE(s.visibility, 'public'),
+			COALESCE(s.visibility, 'private'),
 			(s.user_id = $2) AS is_owner,
 			COALESCE(tss.permission, '') AS share_perm
 		FROM topology_sheets s
@@ -190,7 +192,7 @@ func (r *TopologyRepository) CheckSheetAccess(ctx context.Context, sheetID int, 
 	if sharePerm != "" {
 		return true, false, sharePerm, nil
 	}
-	if visibility == "public" || visibility == "" {
+	if visibility == "public" {
 		return true, false, "read", nil
 	}
 

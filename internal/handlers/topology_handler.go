@@ -84,6 +84,10 @@ func (h *TopologyHandler) CreateSheet(c *gin.Context) {
 		return
 	}
 
+	if req.Visibility != "public" {
+		req.Visibility = "private"
+	}
+
 	userID, _ := getUserContext(c)
 	var uid *int
 	if userID > 0 {
@@ -138,6 +142,10 @@ func (h *TopologyHandler) UpdateSheetVisibility(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input"})
 		return
+	}
+
+	if req.Visibility != "public" {
+		req.Visibility = "private"
 	}
 
 	if err := h.topologyRepo.UpdateSheetVisibility(c.Request.Context(), id, req.Visibility); err != nil {

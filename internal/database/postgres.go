@@ -187,7 +187,7 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 			END IF; 
 			IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'topology_sheets') THEN 
 				ALTER TABLE topology_sheets ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
-				ALTER TABLE topology_sheets ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'public';
+				ALTER TABLE topology_sheets ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'private';
 			END IF; 
 		END $$;
 	`
@@ -474,9 +474,11 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 
 		-- Topology Sheet Access & Granular Sharing
 		ALTER TABLE topology_sheets ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
-		ALTER TABLE topology_sheets ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'public';
+		ALTER TABLE topology_sheets ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'private';
 		CREATE INDEX IF NOT EXISTS idx_topology_sheets_user_id ON topology_sheets(user_id);
 
+		ALTER TABLE topology_sheets ALTER COLUMN visibility SET DEFAULT 'private';
+		UPDATE topology_sheets SET visibility = 'private' WHERE visibility = 'public' OR visibility IS NULL OR visibility = '';
 		UPDATE topology_sheets 
 		SET user_id = (SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1)
 		WHERE user_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN');

@@ -123,7 +123,7 @@ const loading = ref(false);
 const activeSheet = computed(() => sheets.value.find(s => s.id === activeSheetId.value) || null);
 const canManageActiveSheet = computed(() => {
   if (isAdmin.value) return true;
-  if (!activeSheet.value) return canManage.value;
+  if (!activeSheet.value) return false;
   if (activeSheet.value.isOwner) return true;
   if (activeSheet.value.userPermission === 'manage') return true;
   return false;
@@ -140,7 +140,7 @@ const shareForm = ref<{ userId: number | ''; permission: 'read' | 'manage' }>({
   userId: '',
   permission: 'read',
 });
-const newSheetVisibility = ref<'public' | 'private'>('public');
+const newSheetVisibility = ref<'public' | 'private'>('private');
 
 // UI Controls & Sidebars
 const isSidebarCollapsed = ref(false);
@@ -311,11 +311,18 @@ const fetchSheets = async () => {
         activeSheetId.value = sheets.value[0].id;
       }
     } else {
-      // Default Sheet
-      const defaultSheet = await axios.post('/api/v1/topology/sheets', { name: 'Honet-labs Topology', sortOrder: 0, visibility: 'public' });
-      if (defaultSheet.data.success) {
-        sheets.value = [defaultSheet.data.data];
-        activeSheetId.value = defaultSheet.data.data.id;
+      sheets.value = [];
+      activeSheetId.value = null;
+      if (isAdmin.value && canManage.value) {
+        try {
+          const defaultSheet = await axios.post('/api/v1/topology/sheets', { name: 'Honet-labs Topology', sortOrder: 0, visibility: 'private' });
+          if (defaultSheet.data.success) {
+            sheets.value = [defaultSheet.data.data];
+            activeSheetId.value = defaultSheet.data.data.id;
+          }
+        } catch (e) {
+          console.error('Failed to create default sheet:', e);
+        }
       }
     }
     await fetchGraph();
@@ -328,8 +335,18 @@ const fetchSheets = async () => {
 const fetchGraph = async () => {
   loading.value = true;
   try {
+    if (!activeSheetId.value) {
+      activeNodes.value = [];
+      edges.value = [];
+      const allDevsRes = await axios.get('/api/v1/topology');
+      if (allDevsRes.data.success) {
+        allDevices.value = allDevsRes.data.data.nodes || [];
+      }
+      return;
+    }
+
     const [graphRes, allDevsRes] = await Promise.all([
-      axios.get(activeSheetId.value ? `/api/v1/topology?sheetId=${activeSheetId.value}` : '/api/v1/topology'),
+      axios.get(`/api/v1/topology?sheetId=${activeSheetId.value}`),
       axios.get('/api/v1/topology'),
     ]);
 
@@ -380,7 +397,7 @@ const handleCreateSheet = async () => {
       activeSheetId.value = res.data.data.id;
       isSheetModalOpen.value = false;
       newSheetName.value = '';
-      newSheetVisibility.value = 'public';
+      newSheetVisibility.value = 'private';
       fetchGraph();
     }
   } catch (err) {
@@ -1358,6 +1375,9 @@ onUnmounted(() => {
     <!-- SHEET TABS BAR -->
     <!-- ================================================================= -->
     <div class="bg-slate-50 dark:bg-[#171a21] border-b border-slate-200 dark:border-slate-800/80 px-4 flex items-center gap-1.5 text-xs shrink-0 py-1 overflow-x-auto z-20">
+      <span v-if="sheets.length === 0" class="text-xs text-slate-400 dark:text-slate-500 italic py-1 px-1">
+        No shared topology sheets
+      </span>
       <div
         v-for="s in sheets"
         :key="s.id"
@@ -1608,11 +1628,29 @@ onUnmounted(() => {
         ></div>
 
         <!-- Center Status Pill -->
-        <div class="absolute top-4 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+        <div v-if="sheets.length > 0" class="absolute top-4 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
           <div class="px-3 py-1 rounded-full bg-white/95 dark:bg-[#171a21]/90 border border-slate-200 dark:border-slate-800 text-[11px] font-mono text-slate-700 dark:text-slate-400 flex items-center gap-2 shadow-sm backdrop-blur-sm">
             <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
             <span>{{ activeNodes.length }} nodes, {{ edges.length }} edges</span>
           </div>
+        </div>
+
+        <!-- Empty State when no sheets are available/shared -->
+        <div v-if="sheets.length === 0" class="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-10 pointer-events-none">
+          <div class="w-12 h-12 rounded-2xl bg-white/90 dark:bg-[#171a21]/90 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-400 mb-3 shadow-sm backdrop-blur-xs">
+            <Lock class="w-6 h-6" />
+          </div>
+          <h3 class="text-sm font-bold text-slate-800 dark:text-slate-200">No Topology Sheets Accessible</h3>
+          <p class="text-xs text-slate-500 dark:text-slate-400 max-w-sm mt-1">
+            There are no topology sheets shared with your account. Contact an administrator to request access.
+          </p>
+          <button
+            v-if="canManage"
+            @click="isSheetModalOpen = true"
+            class="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-sm transition pointer-events-auto cursor-pointer"
+          >
+            Create New Sheet
+          </button>
         </div>
 
         <!-- SVG Rendering Plane with Transform Matrix -->
@@ -2449,8 +2487,8 @@ onUnmounted(() => {
               v-model="newSheetVisibility"
               class="w-full bg-slate-50 dark:bg-[#111317] border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:border-brand-500"
             >
+              <option value="private">Private (Only you & explicitly shared users) - Recommended</option>
               <option value="public">Public (Shared with all users)</option>
-              <option value="private">Private (Only you & explicitly shared users)</option>
             </select>
             <p class="text-[10px] text-slate-500 mt-1">
               {{ newSheetVisibility === 'private' ? 'Only you and users you explicitly share with can view or manage this tab.' : 'All users with Network Topology permission can view this sheet.' }}
@@ -2529,18 +2567,6 @@ onUnmounted(() => {
               <div class="flex items-center gap-1 shrink-0">
                 <button
                   type="button"
-                  @click="handleToggleSheetVisibility('public')"
-                  :class="[
-                    'px-2.5 py-1 text-xs rounded-lg font-medium transition cursor-pointer',
-                    selectedSheetForShare.visibility === 'public'
-                      ? 'bg-blue-600 text-white font-bold shadow-sm'
-                      : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
-                  ]"
-                >
-                  Public
-                </button>
-                <button
-                  type="button"
                   @click="handleToggleSheetVisibility('private')"
                   :class="[
                     'px-2.5 py-1 text-xs rounded-lg font-medium transition cursor-pointer',
@@ -2550,6 +2576,18 @@ onUnmounted(() => {
                   ]"
                 >
                   Private
+                </button>
+                <button
+                  type="button"
+                  @click="handleToggleSheetVisibility('public')"
+                  :class="[
+                    'px-2.5 py-1 text-xs rounded-lg font-medium transition cursor-pointer',
+                    selectedSheetForShare.visibility === 'public'
+                      ? 'bg-blue-600 text-white font-bold shadow-sm'
+                      : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
+                  ]"
+                >
+                  Public
                 </button>
               </div>
             </div>
