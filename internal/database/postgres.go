@@ -494,6 +494,157 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_topology_sheet_shares_sheet_id ON topology_sheet_shares(sheet_id);
 		CREATE INDEX IF NOT EXISTS idx_topology_sheet_shares_user_id ON topology_sheet_shares(user_id);
+
+		-- =========================================================================
+		-- Multi-Tenant Connections & Granular Sharing Upgrades
+		-- =========================================================================
+
+		-- 1. Vaultwarden
+		ALTER TABLE vaultwarden_configs ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+		ALTER TABLE vaultwarden_configs ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'private';
+		CREATE INDEX IF NOT EXISTS idx_vaultwarden_configs_user_id ON vaultwarden_configs(user_id);
+		UPDATE vaultwarden_configs SET visibility = 'private' WHERE visibility IS NULL OR visibility = '';
+		UPDATE vaultwarden_configs 
+		SET user_id = (SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1)
+		WHERE user_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN');
+
+		CREATE TABLE IF NOT EXISTS vaultwarden_shares (
+			id VARCHAR(50) PRIMARY KEY,
+			config_id VARCHAR(50) NOT NULL REFERENCES vaultwarden_configs(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			permission VARCHAR(20) NOT NULL DEFAULT 'read',
+			shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(config_id, user_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_vaultwarden_shares_config_id ON vaultwarden_shares(config_id);
+		CREATE INDEX IF NOT EXISTS idx_vaultwarden_shares_user_id ON vaultwarden_shares(user_id);
+
+		-- 2. OpenSearch
+		ALTER TABLE opensearch_configs ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+		ALTER TABLE opensearch_configs ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'private';
+		CREATE INDEX IF NOT EXISTS idx_opensearch_configs_user_id ON opensearch_configs(user_id);
+		UPDATE opensearch_configs SET visibility = 'private' WHERE visibility IS NULL OR visibility = '';
+		UPDATE opensearch_configs 
+		SET user_id = (SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1)
+		WHERE user_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN');
+
+		CREATE TABLE IF NOT EXISTS opensearch_shares (
+			id VARCHAR(50) PRIMARY KEY,
+			config_id VARCHAR(50) NOT NULL REFERENCES opensearch_configs(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			permission VARCHAR(20) NOT NULL DEFAULT 'read',
+			shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(config_id, user_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_opensearch_shares_config_id ON opensearch_shares(config_id);
+		CREATE INDEX IF NOT EXISTS idx_opensearch_shares_user_id ON opensearch_shares(user_id);
+
+		-- 3. Data Prepper
+		ALTER TABLE dataprepper_configs ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+		ALTER TABLE dataprepper_configs ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'private';
+		CREATE INDEX IF NOT EXISTS idx_dataprepper_configs_user_id ON dataprepper_configs(user_id);
+		UPDATE dataprepper_configs SET visibility = 'private' WHERE visibility IS NULL OR visibility = '';
+		UPDATE dataprepper_configs 
+		SET user_id = (SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1)
+		WHERE user_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN');
+
+		CREATE TABLE IF NOT EXISTS dataprepper_shares (
+			id VARCHAR(50) PRIMARY KEY,
+			config_id VARCHAR(50) NOT NULL REFERENCES dataprepper_configs(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			permission VARCHAR(20) NOT NULL DEFAULT 'read',
+			shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(config_id, user_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_dataprepper_shares_config_id ON dataprepper_shares(config_id);
+		CREATE INDEX IF NOT EXISTS idx_dataprepper_shares_user_id ON dataprepper_shares(user_id);
+
+		-- 4. OpenTelemetry
+		ALTER TABLE opentelemetry_configs ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+		ALTER TABLE opentelemetry_configs ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'private';
+		CREATE INDEX IF NOT EXISTS idx_opentelemetry_configs_user_id ON opentelemetry_configs(user_id);
+		UPDATE opentelemetry_configs SET visibility = 'private' WHERE visibility IS NULL OR visibility = '';
+		UPDATE opentelemetry_configs 
+		SET user_id = (SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1)
+		WHERE user_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN');
+
+		CREATE TABLE IF NOT EXISTS opentelemetry_shares (
+			id VARCHAR(50) PRIMARY KEY,
+			config_id VARCHAR(50) NOT NULL REFERENCES opentelemetry_configs(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			permission VARCHAR(20) NOT NULL DEFAULT 'read',
+			shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(config_id, user_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_opentelemetry_shares_config_id ON opentelemetry_shares(config_id);
+		CREATE INDEX IF NOT EXISTS idx_opentelemetry_shares_user_id ON opentelemetry_shares(user_id);
+
+		-- 5. Prometheus
+		ALTER TABLE prometheus_configs ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+		ALTER TABLE prometheus_configs ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'private';
+		CREATE INDEX IF NOT EXISTS idx_prometheus_configs_user_id ON prometheus_configs(user_id);
+		UPDATE prometheus_configs SET visibility = 'private' WHERE visibility IS NULL OR visibility = '';
+		UPDATE prometheus_configs 
+		SET user_id = (SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1)
+		WHERE user_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN');
+
+		CREATE TABLE IF NOT EXISTS prometheus_shares (
+			id VARCHAR(50) PRIMARY KEY,
+			config_id VARCHAR(50) NOT NULL REFERENCES prometheus_configs(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			permission VARCHAR(20) NOT NULL DEFAULT 'read',
+			shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(config_id, user_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_prometheus_shares_config_id ON prometheus_shares(config_id);
+		CREATE INDEX IF NOT EXISTS idx_prometheus_shares_user_id ON prometheus_shares(user_id);
+
+		-- 6. Grafana
+		ALTER TABLE grafana_configs ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+		ALTER TABLE grafana_configs ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'private';
+		CREATE INDEX IF NOT EXISTS idx_grafana_configs_user_id ON grafana_configs(user_id);
+		UPDATE grafana_configs SET visibility = 'private' WHERE visibility IS NULL OR visibility = '';
+		UPDATE grafana_configs 
+		SET user_id = (SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1)
+		WHERE user_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN');
+
+		CREATE TABLE IF NOT EXISTS grafana_shares (
+			id VARCHAR(50) PRIMARY KEY,
+			config_id VARCHAR(50) NOT NULL REFERENCES grafana_configs(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			permission VARCHAR(20) NOT NULL DEFAULT 'read',
+			shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(config_id, user_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_grafana_shares_config_id ON grafana_shares(config_id);
+		CREATE INDEX IF NOT EXISTS idx_grafana_shares_user_id ON grafana_shares(user_id);
+
+		-- 7. Docker Engine Connections
+		ALTER TABLE docker_connections ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+		ALTER TABLE docker_connections ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'private';
+		CREATE INDEX IF NOT EXISTS idx_docker_connections_user_id ON docker_connections(user_id);
+		UPDATE docker_connections SET visibility = 'private' WHERE visibility IS NULL OR visibility = '';
+		UPDATE docker_connections 
+		SET user_id = (SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1)
+		WHERE user_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN');
+
+		CREATE TABLE IF NOT EXISTS docker_connection_shares (
+			id VARCHAR(50) PRIMARY KEY,
+			connection_id VARCHAR(50) NOT NULL REFERENCES docker_connections(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			permission VARCHAR(20) NOT NULL DEFAULT 'read',
+			shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(connection_id, user_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_docker_conn_shares_conn_id ON docker_connection_shares(connection_id);
+		CREATE INDEX IF NOT EXISTS idx_docker_conn_shares_user_id ON docker_connection_shares(user_id);
 	`
 	if _, err := pool.Exec(ctx, upgradeSQL); err != nil {
 		logger.Warn("Database", fmt.Sprintf("Incremental upgrades execution notice: %v", err))

@@ -59,8 +59,23 @@ CREATE TABLE IF NOT EXISTS grafana_configs (
     token TEXT NOT NULL,
     datasource_uid VARCHAR(100) NOT NULL,
     is_active BOOLEAN DEFAULT false,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    visibility VARCHAR(20) NOT NULL DEFAULT 'private',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_grafana_configs_user_id ON grafana_configs(user_id);
+
+CREATE TABLE IF NOT EXISTS grafana_shares (
+    id VARCHAR(50) PRIMARY KEY,
+    config_id VARCHAR(50) NOT NULL REFERENCES grafana_configs(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission VARCHAR(20) NOT NULL DEFAULT 'read',
+    shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(config_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_grafana_shares_config_id ON grafana_shares(config_id);
+CREATE INDEX IF NOT EXISTS idx_grafana_shares_user_id ON grafana_shares(user_id);
 
 -- 7. PrometheusConfigs - Stores Prometheus server connection profiles
 CREATE TABLE IF NOT EXISTS prometheus_configs (
@@ -76,8 +91,23 @@ CREATE TABLE IF NOT EXISTS prometheus_configs (
     ssh_password TEXT,
     ssh_key TEXT,
     is_active BOOLEAN DEFAULT false,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    visibility VARCHAR(20) NOT NULL DEFAULT 'private',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_prometheus_configs_user_id ON prometheus_configs(user_id);
+
+CREATE TABLE IF NOT EXISTS prometheus_shares (
+    id VARCHAR(50) PRIMARY KEY,
+    config_id VARCHAR(50) NOT NULL REFERENCES prometheus_configs(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission VARCHAR(20) NOT NULL DEFAULT 'read',
+    shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(config_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_prometheus_shares_config_id ON prometheus_shares(config_id);
+CREATE INDEX IF NOT EXISTS idx_prometheus_shares_user_id ON prometheus_shares(user_id);
 
 -- 8. MonitoringViews - Dashboard slideshow configurations
 CREATE TABLE IF NOT EXISTS monitoring_views (
@@ -129,8 +159,23 @@ CREATE TABLE IF NOT EXISTS dataprepper_configs (
     ssh_password TEXT,
     ssh_key TEXT,
     is_active BOOLEAN DEFAULT false,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    visibility VARCHAR(20) NOT NULL DEFAULT 'private',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_dataprepper_configs_user_id ON dataprepper_configs(user_id);
+
+CREATE TABLE IF NOT EXISTS dataprepper_shares (
+    id VARCHAR(50) PRIMARY KEY,
+    config_id VARCHAR(50) NOT NULL REFERENCES dataprepper_configs(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission VARCHAR(20) NOT NULL DEFAULT 'read',
+    shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(config_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dataprepper_shares_config_id ON dataprepper_shares(config_id);
+CREATE INDEX IF NOT EXISTS idx_dataprepper_shares_user_id ON dataprepper_shares(user_id);
 
 -- 12. OpenSearchConfigs - OpenSearch cluster connection profiles
 CREATE TABLE IF NOT EXISTS opensearch_configs (
@@ -143,8 +188,23 @@ CREATE TABLE IF NOT EXISTS opensearch_configs (
     use_ssl BOOLEAN DEFAULT false,
     verify_ssl BOOLEAN DEFAULT true,
     is_active BOOLEAN DEFAULT false,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    visibility VARCHAR(20) NOT NULL DEFAULT 'private',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_opensearch_configs_user_id ON opensearch_configs(user_id);
+
+CREATE TABLE IF NOT EXISTS opensearch_shares (
+    id VARCHAR(50) PRIMARY KEY,
+    config_id VARCHAR(50) NOT NULL REFERENCES opensearch_configs(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission VARCHAR(20) NOT NULL DEFAULT 'read',
+    shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(config_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_opensearch_shares_config_id ON opensearch_shares(config_id);
+CREATE INDEX IF NOT EXISTS idx_opensearch_shares_user_id ON opensearch_shares(user_id);
 
 -- 13. ImportedMibs - SNMP MIB modules imported into the system
 CREATE TABLE IF NOT EXISTS imported_mibs (
@@ -357,9 +417,24 @@ CREATE TABLE IF NOT EXISTS opentelemetry_configs (
     reload_mode VARCHAR(50) NOT NULL DEFAULT 'restart',
     last_status VARCHAR(50) DEFAULT 'unknown',
     is_active BOOLEAN DEFAULT true,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    visibility VARCHAR(20) NOT NULL DEFAULT 'private',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_opentelemetry_configs_user_id ON opentelemetry_configs(user_id);
+
+CREATE TABLE IF NOT EXISTS opentelemetry_shares (
+    id VARCHAR(50) PRIMARY KEY,
+    config_id VARCHAR(50) NOT NULL REFERENCES opentelemetry_configs(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission VARCHAR(20) NOT NULL DEFAULT 'read',
+    shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(config_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_opentelemetry_shares_config_id ON opentelemetry_shares(config_id);
+CREATE INDEX IF NOT EXISTS idx_opentelemetry_shares_user_id ON opentelemetry_shares(user_id);
 
 CREATE TABLE IF NOT EXISTS opentelemetry_config_history (
     id VARCHAR(50) PRIMARY KEY,
@@ -380,9 +455,24 @@ CREATE TABLE IF NOT EXISTS vaultwarden_configs (
     is_active BOOLEAN DEFAULT true,
     last_synced_at TIMESTAMP WITH TIME ZONE,
     cached_ciphers JSONB DEFAULT '[]'::jsonb,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    visibility VARCHAR(20) NOT NULL DEFAULT 'private',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_vaultwarden_configs_user_id ON vaultwarden_configs(user_id);
+
+CREATE TABLE IF NOT EXISTS vaultwarden_shares (
+    id VARCHAR(50) PRIMARY KEY,
+    config_id VARCHAR(50) NOT NULL REFERENCES vaultwarden_configs(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission VARCHAR(20) NOT NULL DEFAULT 'read',
+    shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(config_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_vaultwarden_shares_config_id ON vaultwarden_shares(config_id);
+CREATE INDEX IF NOT EXISTS idx_vaultwarden_shares_user_id ON vaultwarden_shares(user_id);
 
 -- 27. DockerConnections - Docker host / engine connections (Local socket, Remote SSH, TCP)
 CREATE TABLE IF NOT EXISTS docker_connections (
@@ -400,9 +490,24 @@ CREATE TABLE IF NOT EXISTS docker_connections (
     ssh_key_encrypted TEXT,
     is_active BOOLEAN DEFAULT true,
     is_default BOOLEAN DEFAULT false,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    visibility VARCHAR(20) NOT NULL DEFAULT 'private',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_docker_connections_user_id ON docker_connections(user_id);
+
+CREATE TABLE IF NOT EXISTS docker_connection_shares (
+    id VARCHAR(50) PRIMARY KEY,
+    connection_id VARCHAR(50) NOT NULL REFERENCES docker_connections(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission VARCHAR(20) NOT NULL DEFAULT 'read',
+    shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(connection_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_docker_conn_shares_conn_id ON docker_connection_shares(connection_id);
+CREATE INDEX IF NOT EXISTS idx_docker_conn_shares_user_id ON docker_connection_shares(user_id);
 
 -- 28. VisualReports - Visual reporting documents and metrics dashboards
 CREATE TABLE IF NOT EXISTS visual_reports (

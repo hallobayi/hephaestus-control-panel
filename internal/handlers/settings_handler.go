@@ -25,6 +25,7 @@ type SettingsHandler struct {
 	configRepo    *repository.ConfigRepository
 	userRepo      *repository.UserRepository
 	systemService *services.SystemService
+	shareRepo     *repository.ConnectionShareRepository
 }
 
 func NewSettingsHandler(
@@ -36,6 +37,7 @@ func NewSettingsHandler(
 		configRepo:    configRepo,
 		userRepo:      userRepo,
 		systemService: systemService,
+		shareRepo:     repository.NewConnectionShareRepository(),
 	}
 }
 
@@ -275,7 +277,8 @@ func (h *SettingsHandler) DeleteRole(c *gin.Context) {
 
 // Grafana Configs
 func (h *SettingsHandler) ListGrafana(c *gin.Context) {
-	list, err := h.configRepo.ListGrafana(c.Request.Context())
+	userID, userRole := getUserContext(c)
+	list, err := h.configRepo.ListGrafana(c.Request.Context(), userID, userRole)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
@@ -284,6 +287,7 @@ func (h *SettingsHandler) ListGrafana(c *gin.Context) {
 }
 
 func (h *SettingsHandler) SaveGrafana(c *gin.Context) {
+	userID, userRole := getUserContext(c)
 	var cfg domain.GrafanaConfig
 	if err := c.ShouldBindJSON(&cfg); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input"})
@@ -308,7 +312,7 @@ func (h *SettingsHandler) SaveGrafana(c *gin.Context) {
 	if cfg.ID == "" {
 		cfg.ID = fmt.Sprintf("graf-%s", uuid.New().String()[:8])
 	}
-	if err := h.configRepo.SaveGrafana(c.Request.Context(), cfg); err != nil {
+	if err := h.configRepo.SaveGrafana(c.Request.Context(), cfg, userID, userRole); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
@@ -325,12 +329,104 @@ func (h *SettingsHandler) SetActiveGrafana(c *gin.Context) {
 }
 
 func (h *SettingsHandler) DeleteGrafana(c *gin.Context) {
+	userID, userRole := getUserContext(c)
 	id := c.Param("id")
-	if err := h.configRepo.DeleteGrafana(c.Request.Context(), id); err != nil {
+	if err := h.configRepo.DeleteGrafana(c.Request.Context(), id, userID, userRole); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Grafana config deleted."})
+}
+
+func (h *SettingsHandler) ListGrafanaShares(c *gin.Context) {
+	configID := c.Param("id")
+	if configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Configuration ID is required"})
+		return
+	}
+	shares, err := h.shareRepo.ListShares(c.Request.Context(), "grafana_shares", "config_id", configID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": shares})
+}
+
+func (h *SettingsHandler) AddGrafanaShare(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	if configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Configuration ID is required"})
+		return
+	}
+
+	var req struct {
+		UserID     int    `json:"userId" binding:"required"`
+		Permission string `json:"permission"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request body: userId is required"})
+		return
+	}
+
+	hasAccess, isOwner, perm, err := h.shareRepo.CheckAccess(c.Request.Context(), "grafana_configs", "grafana_shares", "config_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || (!isOwner && perm != "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "You do not have permission to share this configuration"})
+		return
+	}
+
+	if err := h.shareRepo.AddShare(c.Request.Context(), "grafana_shares", "config_id", configID, req.UserID, req.Permission, currentUserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Share access granted successfully"})
+}
+
+func (h *SettingsHandler) DeleteGrafanaShare(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	targetUserIDStr := c.Param("userId")
+	targetUserID, err := strconv.Atoi(targetUserIDStr)
+	if err != nil || configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Valid configuration ID and user ID are required"})
+		return
+	}
+
+	hasAccess, isOwner, perm, err := h.shareRepo.CheckAccess(c.Request.Context(), "grafana_configs", "grafana_shares", "config_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || (!isOwner && perm != "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "You do not have permission to modify shares for this configuration"})
+		return
+	}
+
+	if err := h.shareRepo.DeleteShare(c.Request.Context(), "grafana_shares", "config_id", configID, targetUserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Share access revoked successfully"})
+}
+
+func (h *SettingsHandler) UpdateGrafanaVisibility(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	var req struct {
+		Visibility string `json:"visibility" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Visibility (private/public) is required"})
+		return
+	}
+
+	hasAccess, isOwner, _, err := h.shareRepo.CheckAccess(c.Request.Context(), "grafana_configs", "grafana_shares", "config_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || !isOwner {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Only the connection owner can change its visibility"})
+		return
+	}
+
+	if err := h.shareRepo.UpdateVisibility(c.Request.Context(), "grafana_configs", configID, req.Visibility); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": fmt.Sprintf("Visibility updated to %s", req.Visibility)})
 }
 
 // TestGrafana verifies network connectivity, bearer token, and datasource UID against Grafana server
@@ -528,7 +624,8 @@ func (h *SettingsHandler) GetGrafanaDatasources(c *gin.Context) {
 
 // Prometheus Configs
 func (h *SettingsHandler) ListPrometheus(c *gin.Context) {
-	list, err := h.configRepo.ListPrometheus(c.Request.Context())
+	userID, userRole := getUserContext(c)
+	list, err := h.configRepo.ListPrometheus(c.Request.Context(), userID, userRole)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
@@ -563,6 +660,7 @@ func (h *SettingsHandler) ListPrometheus(c *gin.Context) {
 }
 
 func (h *SettingsHandler) SavePrometheus(c *gin.Context) {
+	userID, userRole := getUserContext(c)
 	var cfg domain.PrometheusConfig
 	if err := c.ShouldBindJSON(&cfg); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input"})
@@ -589,7 +687,7 @@ func (h *SettingsHandler) SavePrometheus(c *gin.Context) {
 	if cfg.ID == "" {
 		cfg.ID = fmt.Sprintf("prom-%s", uuid.New().String()[:8])
 	}
-	if err := h.configRepo.SavePrometheus(c.Request.Context(), cfg); err != nil {
+	if err := h.configRepo.SavePrometheus(c.Request.Context(), cfg, userID, userRole); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
@@ -606,12 +704,104 @@ func (h *SettingsHandler) SetActivePrometheus(c *gin.Context) {
 }
 
 func (h *SettingsHandler) DeletePrometheus(c *gin.Context) {
+	userID, userRole := getUserContext(c)
 	id := c.Param("id")
-	if err := h.configRepo.DeletePrometheus(c.Request.Context(), id); err != nil {
+	if err := h.configRepo.DeletePrometheus(c.Request.Context(), id, userID, userRole); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Prometheus config deleted."})
+}
+
+func (h *SettingsHandler) ListPrometheusShares(c *gin.Context) {
+	configID := c.Param("id")
+	if configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Configuration ID is required"})
+		return
+	}
+	shares, err := h.shareRepo.ListShares(c.Request.Context(), "prometheus_shares", "config_id", configID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": shares})
+}
+
+func (h *SettingsHandler) AddPrometheusShare(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	if configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Configuration ID is required"})
+		return
+	}
+
+	var req struct {
+		UserID     int    `json:"userId" binding:"required"`
+		Permission string `json:"permission"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request body: userId is required"})
+		return
+	}
+
+	hasAccess, isOwner, perm, err := h.shareRepo.CheckAccess(c.Request.Context(), "prometheus_configs", "prometheus_shares", "config_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || (!isOwner && perm != "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "You do not have permission to share this configuration"})
+		return
+	}
+
+	if err := h.shareRepo.AddShare(c.Request.Context(), "prometheus_shares", "config_id", configID, req.UserID, req.Permission, currentUserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Share access granted successfully"})
+}
+
+func (h *SettingsHandler) DeletePrometheusShare(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	targetUserIDStr := c.Param("userId")
+	targetUserID, err := strconv.Atoi(targetUserIDStr)
+	if err != nil || configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Valid configuration ID and user ID are required"})
+		return
+	}
+
+	hasAccess, isOwner, perm, err := h.shareRepo.CheckAccess(c.Request.Context(), "prometheus_configs", "prometheus_shares", "config_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || (!isOwner && perm != "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "You do not have permission to modify shares for this configuration"})
+		return
+	}
+
+	if err := h.shareRepo.DeleteShare(c.Request.Context(), "prometheus_shares", "config_id", configID, targetUserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Share access revoked successfully"})
+}
+
+func (h *SettingsHandler) UpdatePrometheusVisibility(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	var req struct {
+		Visibility string `json:"visibility" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Visibility (private/public) is required"})
+		return
+	}
+
+	hasAccess, isOwner, _, err := h.shareRepo.CheckAccess(c.Request.Context(), "prometheus_configs", "prometheus_shares", "config_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || !isOwner {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Only the connection owner can change its visibility"})
+		return
+	}
+
+	if err := h.shareRepo.UpdateVisibility(c.Request.Context(), "prometheus_configs", configID, req.Visibility); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": fmt.Sprintf("Visibility updated to %s", req.Visibility)})
 }
 
 // Database Connection Reconfiguration

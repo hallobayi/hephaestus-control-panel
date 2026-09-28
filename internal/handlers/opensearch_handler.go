@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"go-hephaestus/internal/core/domain"
+	"go-hephaestus/internal/repository"
 	"go-hephaestus/internal/services"
 
 	"github.com/gin-gonic/gin"
@@ -12,10 +15,14 @@ import (
 
 type OpenSearchHandler struct {
 	openSearchService *services.OpenSearchService
+	shareRepo         *repository.ConnectionShareRepository
 }
 
 func NewOpenSearchHandler(openSearchService *services.OpenSearchService) *OpenSearchHandler {
-	return &OpenSearchHandler{openSearchService: openSearchService}
+	return &OpenSearchHandler{
+		openSearchService: openSearchService,
+		shareRepo:         repository.NewConnectionShareRepository(),
+	}
 }
 
 func (h *OpenSearchHandler) GetHealth(c *gin.Context) {
@@ -73,7 +80,8 @@ func (h *OpenSearchHandler) GetRecovery(c *gin.Context) {
 }
 
 func (h *OpenSearchHandler) GetConfig(c *gin.Context) {
-	cfg, err := h.openSearchService.GetActiveConfig(c.Request.Context())
+	userID, userRole := getUserContext(c)
+	cfg, err := h.openSearchService.GetActiveConfigForUser(c.Request.Context(), userID, userRole)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": true, "data": nil})
 		return
@@ -85,7 +93,23 @@ func (h *OpenSearchHandler) GetConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": safeCfg})
 }
 
+func (h *OpenSearchHandler) ListConfigs(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+	configs, err := h.openSearchService.ListConfigs(c.Request.Context(), userID, userRole)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	for i := range configs {
+		if configs[i].Password != "" {
+			configs[i].Password = "••••••••"
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": configs})
+}
+
 func (h *OpenSearchHandler) SaveConfig(c *gin.Context) {
+	userID, userRole := getUserContext(c)
 	var req domain.OpenSearchConfig
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request body"})
@@ -104,7 +128,7 @@ func (h *OpenSearchHandler) SaveConfig(c *gin.Context) {
 		req.Port = 9200
 	}
 
-	saved, err := h.openSearchService.SaveConfig(c.Request.Context(), req)
+	saved, err := h.openSearchService.SaveConfig(c.Request.Context(), req, userID, userRole)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
@@ -117,15 +141,111 @@ func (h *OpenSearchHandler) SaveConfig(c *gin.Context) {
 }
 
 func (h *OpenSearchHandler) DeleteConfig(c *gin.Context) {
+	userID, userRole := getUserContext(c)
 	id := c.Param("id")
 	if id == "" {
 		id = c.Query("id")
 	}
-	if err := h.openSearchService.DeleteConfig(c.Request.Context(), id); err != nil {
+	if err := h.openSearchService.DeleteConfig(c.Request.Context(), id, userID, userRole); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "OpenSearch configuration deleted successfully."})
+}
+
+// Sharing Handlers
+func (h *OpenSearchHandler) ListShares(c *gin.Context) {
+	configID := c.Param("id")
+	if configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Configuration ID is required"})
+		return
+	}
+	shares, err := h.shareRepo.ListShares(c.Request.Context(), "opensearch_shares", "config_id", configID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": shares})
+}
+
+func (h *OpenSearchHandler) AddShare(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	if configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Configuration ID is required"})
+		return
+	}
+
+	var req struct {
+		UserID     int    `json:"userId" binding:"required"`
+		Permission string `json:"permission"` // "read" or "manage"
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request body: userId is required"})
+		return
+	}
+
+	// Verify current user can manage
+	hasAccess, isOwner, perm, err := h.shareRepo.CheckAccess(c.Request.Context(), "opensearch_configs", "opensearch_shares", "config_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || (!isOwner && perm != "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "You do not have permission to share this configuration"})
+		return
+	}
+
+	if err := h.shareRepo.AddShare(c.Request.Context(), "opensearch_shares", "config_id", configID, req.UserID, req.Permission, currentUserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Share access granted successfully"})
+}
+
+func (h *OpenSearchHandler) DeleteShare(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	targetUserIDStr := c.Param("userId")
+	targetUserID, err := strconv.Atoi(targetUserIDStr)
+	if err != nil || configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Valid configuration ID and user ID are required"})
+		return
+	}
+
+	// Verify current user can manage
+	hasAccess, isOwner, perm, err := h.shareRepo.CheckAccess(c.Request.Context(), "opensearch_configs", "opensearch_shares", "config_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || (!isOwner && perm != "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "You do not have permission to modify shares for this configuration"})
+		return
+	}
+
+	if err := h.shareRepo.DeleteShare(c.Request.Context(), "opensearch_shares", "config_id", configID, targetUserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Share access revoked successfully"})
+}
+
+func (h *OpenSearchHandler) UpdateVisibility(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	var req struct {
+		Visibility string `json:"visibility" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Visibility (private/public) is required"})
+		return
+	}
+
+	// Verify current user is owner or admin
+	hasAccess, isOwner, _, err := h.shareRepo.CheckAccess(c.Request.Context(), "opensearch_configs", "opensearch_shares", "config_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || !isOwner {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Only the connection owner can change its visibility"})
+		return
+	}
+
+	if err := h.shareRepo.UpdateVisibility(c.Request.Context(), "opensearch_configs", configID, req.Visibility); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": fmt.Sprintf("Visibility updated to %s", req.Visibility)})
 }
 
 func (h *OpenSearchHandler) TestConnection(c *gin.Context) {

@@ -16,6 +16,7 @@ import (
 type DockerHandler struct {
 	dockerService *services.DockerService
 	dockerRepo    *repository.DockerRepository
+	shareRepo     *repository.ConnectionShareRepository
 }
 
 func NewDockerHandler(
@@ -25,6 +26,7 @@ func NewDockerHandler(
 	return &DockerHandler{
 		dockerService: dockerService,
 		dockerRepo:    dockerRepo,
+		shareRepo:     repository.NewConnectionShareRepository(),
 	}
 }
 
@@ -33,7 +35,8 @@ func NewDockerHandler(
 // -------------------------------------------------------------
 
 func (h *DockerHandler) ListConnections(c *gin.Context) {
-	connections, err := h.dockerRepo.ListConnections(c.Request.Context())
+	userID, userRole := getUserContext(c)
+	connections, err := h.dockerRepo.ListConnections(c.Request.Context(), userID, userRole)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -167,7 +170,8 @@ func (h *DockerHandler) SaveConnection(c *gin.Context) {
 		IsDefault:    isDefault,
 	}
 
-	saved, err := h.dockerRepo.SaveConnection(c.Request.Context(), conn)
+	userID, userRole := getUserContext(c)
+	saved, err := h.dockerRepo.SaveConnection(c.Request.Context(), conn, userID, userRole)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -188,6 +192,112 @@ func (h *DockerHandler) SaveConnection(c *gin.Context) {
 		"message": "Docker connection saved successfully",
 		"data":    saved,
 	})
+}
+
+func (h *DockerHandler) DeleteConnection(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Connection ID is required"})
+		return
+	}
+
+	if err := h.dockerRepo.DeleteConnection(c.Request.Context(), id, userID, userRole); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Docker connection deleted successfully"})
+}
+
+func (h *DockerHandler) ListConnectionShares(c *gin.Context) {
+	configID := c.Param("id")
+	if configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Connection ID is required"})
+		return
+	}
+	shares, err := h.shareRepo.ListShares(c.Request.Context(), "docker_connection_shares", "connection_id", configID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": shares})
+}
+
+func (h *DockerHandler) AddConnectionShare(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	if configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Connection ID is required"})
+		return
+	}
+
+	var req struct {
+		UserID     int    `json:"userId" binding:"required"`
+		Permission string `json:"permission"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request body: userId is required"})
+		return
+	}
+
+	hasAccess, isOwner, perm, err := h.shareRepo.CheckAccess(c.Request.Context(), "docker_connections", "docker_connection_shares", "connection_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || (!isOwner && perm != "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "You do not have permission to share this connection"})
+		return
+	}
+
+	if err := h.shareRepo.AddShare(c.Request.Context(), "docker_connection_shares", "connection_id", configID, req.UserID, req.Permission, currentUserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Share access granted successfully"})
+}
+
+func (h *DockerHandler) DeleteConnectionShare(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	targetUserIDStr := c.Param("userId")
+	targetUserID, err := strconv.Atoi(targetUserIDStr)
+	if err != nil || configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Valid connection ID and user ID are required"})
+		return
+	}
+
+	hasAccess, isOwner, perm, err := h.shareRepo.CheckAccess(c.Request.Context(), "docker_connections", "docker_connection_shares", "connection_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || (!isOwner && perm != "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "You do not have permission to modify shares for this connection"})
+		return
+	}
+
+	if err := h.shareRepo.DeleteShare(c.Request.Context(), "docker_connection_shares", "connection_id", configID, targetUserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Share access revoked successfully"})
+}
+
+func (h *DockerHandler) UpdateConnectionVisibility(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	var req struct {
+		Visibility string `json:"visibility" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Visibility (private/public) is required"})
+		return
+	}
+
+	hasAccess, isOwner, _, err := h.shareRepo.CheckAccess(c.Request.Context(), "docker_connections", "docker_connection_shares", "connection_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || !isOwner {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Only the connection owner can change its visibility"})
+		return
+	}
+
+	if err := h.shareRepo.UpdateVisibility(c.Request.Context(), "docker_connections", configID, req.Visibility); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": fmt.Sprintf("Visibility updated to %s", req.Visibility)})
 }
 
 func (h *DockerHandler) TestConnection(c *gin.Context) {

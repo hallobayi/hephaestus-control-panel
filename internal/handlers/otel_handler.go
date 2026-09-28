@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"go-hephaestus/internal/core/domain"
@@ -15,12 +17,14 @@ import (
 type OTelHandler struct {
 	otelService *services.OTelService
 	otelRepo    *repository.OTelRepository
+	shareRepo   *repository.ConnectionShareRepository
 }
 
 func NewOTelHandler(otelService *services.OTelService, otelRepo *repository.OTelRepository) *OTelHandler {
 	return &OTelHandler{
 		otelService: otelService,
 		otelRepo:    otelRepo,
+		shareRepo:   repository.NewConnectionShareRepository(),
 	}
 }
 
@@ -30,7 +34,8 @@ func (h *OTelHandler) ListHosts(c *gin.Context) {
 		_ = h.otelService.CheckAllHostsStatus(c.Request.Context())
 	}
 
-	hosts, err := h.otelRepo.List(c.Request.Context())
+	userID, userRole := getUserContext(c)
+	hosts, err := h.otelRepo.List(c.Request.Context(), userID, userRole)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
@@ -98,7 +103,8 @@ func (h *OTelHandler) SaveHost(c *gin.Context) {
 		cfg.ReloadMode = "restart"
 	}
 
-	if err := h.otelRepo.Save(c.Request.Context(), cfg); err != nil {
+	userID, userRole := getUserContext(c)
+	if err := h.otelRepo.Save(c.Request.Context(), cfg, userID, userRole); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Failed to save host: " + err.Error()})
 		return
 	}
@@ -113,12 +119,105 @@ func (h *OTelHandler) SaveHost(c *gin.Context) {
 
 // DeleteHost removes an OpenTelemetry host configuration
 func (h *OTelHandler) DeleteHost(c *gin.Context) {
+	userID, userRole := getUserContext(c)
 	id := c.Param("id")
-	if err := h.otelRepo.Delete(c.Request.Context(), id); err != nil {
+	if err := h.otelRepo.Delete(c.Request.Context(), id, userID, userRole); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Host deleted successfully"})
+}
+
+// Sharing Handlers
+func (h *OTelHandler) ListShares(c *gin.Context) {
+	configID := c.Param("id")
+	if configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Host ID is required"})
+		return
+	}
+	shares, err := h.shareRepo.ListShares(c.Request.Context(), "opentelemetry_shares", "config_id", configID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": shares})
+}
+
+func (h *OTelHandler) AddShare(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	if configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Host ID is required"})
+		return
+	}
+
+	var req struct {
+		UserID     int    `json:"userId" binding:"required"`
+		Permission string `json:"permission"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid request body: userId is required"})
+		return
+	}
+
+	hasAccess, isOwner, perm, err := h.shareRepo.CheckAccess(c.Request.Context(), "opentelemetry_configs", "opentelemetry_shares", "config_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || (!isOwner && perm != "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "You do not have permission to share this host profile"})
+		return
+	}
+
+	if err := h.shareRepo.AddShare(c.Request.Context(), "opentelemetry_shares", "config_id", configID, req.UserID, req.Permission, currentUserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Share access granted successfully"})
+}
+
+func (h *OTelHandler) DeleteShare(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	targetUserIDStr := c.Param("userId")
+	targetUserID, err := strconv.Atoi(targetUserIDStr)
+	if err != nil || configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Valid host ID and user ID are required"})
+		return
+	}
+
+	hasAccess, isOwner, perm, err := h.shareRepo.CheckAccess(c.Request.Context(), "opentelemetry_configs", "opentelemetry_shares", "config_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || (!isOwner && perm != "manage") {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "You do not have permission to modify shares for this host profile"})
+		return
+	}
+
+	if err := h.shareRepo.DeleteShare(c.Request.Context(), "opentelemetry_shares", "config_id", configID, targetUserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Share access revoked successfully"})
+}
+
+func (h *OTelHandler) UpdateVisibility(c *gin.Context) {
+	currentUserID, currentUserRole := getUserContext(c)
+	configID := c.Param("id")
+	var req struct {
+		Visibility string `json:"visibility" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Visibility (private/public) is required"})
+		return
+	}
+
+	hasAccess, isOwner, _, err := h.shareRepo.CheckAccess(c.Request.Context(), "opentelemetry_configs", "opentelemetry_shares", "config_id", configID, currentUserID, currentUserRole)
+	if err != nil || !hasAccess || !isOwner {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Only the connection owner can change its visibility"})
+		return
+	}
+
+	if err := h.shareRepo.UpdateVisibility(c.Request.Context(), "opentelemetry_configs", configID, req.Visibility); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": fmt.Sprintf("Visibility updated to %s", req.Visibility)})
 }
 
 // TestHost verifies SSH connectivity and agent status

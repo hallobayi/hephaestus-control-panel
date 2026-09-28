@@ -37,24 +37,85 @@ func (r *ConfigRepository) SetAppConfig(ctx context.Context, key, value string) 
 }
 
 // Grafana Configs
-func (r *ConfigRepository) ListGrafana(ctx context.Context) ([]domain.GrafanaConfig, error) {
+func (r *ConfigRepository) ListGrafana(ctx context.Context, userID int, userRole string) ([]domain.GrafanaConfig, error) {
 	pool, err := database.GetPool()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := pool.Query(ctx, `SELECT id, name, host, token, datasource_uid, is_active, created_at FROM grafana_configs ORDER BY name ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 
+	isAdmin := domain.IsAdminRole(userRole)
 	var list []domain.GrafanaConfig
-	for rows.Next() {
-		var c domain.GrafanaConfig
-		if err := rows.Scan(&c.ID, &c.Name, &c.Host, &c.Token, &c.DatasourceUID, &c.IsActive, &c.CreatedAt); err != nil {
+
+	if isAdmin || (userID == 0 && userRole == "ADMIN") {
+		query := `
+			SELECT c.id, c.name, c.host, c.token, c.datasource_uid, c.is_active, c.created_at,
+			       c.user_id, COALESCE(u.username, 'Admin') AS owner_username, COALESCE(c.visibility, 'private') AS visibility,
+			       (SELECT COUNT(*) FROM grafana_shares WHERE config_id = c.id) AS shares_count
+			FROM grafana_configs c
+			LEFT JOIN users u ON c.user_id = u.id
+			ORDER BY c.name ASC
+		`
+		rows, err := pool.Query(ctx, query)
+		if err != nil {
 			return nil, err
 		}
-		list = append(list, c)
+		defer rows.Close()
+
+		for rows.Next() {
+			var c domain.GrafanaConfig
+			if err := rows.Scan(
+				&c.ID, &c.Name, &c.Host, &c.Token, &c.DatasourceUID, &c.IsActive, &c.CreatedAt,
+				&c.UserID, &c.OwnerUsername, &c.Visibility, &c.SharesCount,
+			); err != nil {
+				return nil, err
+			}
+			c.IsOwner = true
+			c.UserPermission = "manage"
+			list = append(list, c)
+		}
+	} else {
+		query := `
+			SELECT c.id, c.name, c.host, c.token, c.datasource_uid, c.is_active, c.created_at,
+			       c.user_id, COALESCE(u.username, 'Admin') AS owner_username, COALESCE(c.visibility, 'private') AS visibility,
+			       (SELECT COUNT(*) FROM grafana_shares WHERE config_id = c.id) AS shares_count,
+			       COALESCE(gs.permission, '') AS share_perm
+			FROM grafana_configs c
+			LEFT JOIN users u ON c.user_id = u.id
+			LEFT JOIN grafana_shares gs ON c.id = gs.config_id AND gs.user_id = $1
+			WHERE c.visibility = 'public'
+			   OR c.user_id = $1
+			   OR gs.user_id = $1
+			ORDER BY c.name ASC
+		`
+		rows, err := pool.Query(ctx, query, userID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var c domain.GrafanaConfig
+			var sharePerm string
+			if err := rows.Scan(
+				&c.ID, &c.Name, &c.Host, &c.Token, &c.DatasourceUID, &c.IsActive, &c.CreatedAt,
+				&c.UserID, &c.OwnerUsername, &c.Visibility, &c.SharesCount, &sharePerm,
+			); err != nil {
+				return nil, err
+			}
+			c.IsOwner = (c.UserID != nil && *c.UserID == userID)
+			if c.IsOwner {
+				c.UserPermission = "manage"
+			} else if sharePerm != "" {
+				c.UserPermission = sharePerm
+			} else {
+				c.UserPermission = "read"
+			}
+			list = append(list, c)
+		}
+	}
+
+	if list == nil {
+		list = []domain.GrafanaConfig{}
 	}
 	return list, nil
 }
@@ -65,25 +126,52 @@ func (r *ConfigRepository) GetActiveGrafana(ctx context.Context) (*domain.Grafan
 		return nil, err
 	}
 	var c domain.GrafanaConfig
-	err = pool.QueryRow(ctx, `SELECT id, name, host, token, datasource_uid, is_active, created_at FROM grafana_configs WHERE is_active = true LIMIT 1`).
-		Scan(&c.ID, &c.Name, &c.Host, &c.Token, &c.DatasourceUID, &c.IsActive, &c.CreatedAt)
+	err = pool.QueryRow(ctx, `SELECT id, name, host, token, datasource_uid, is_active, created_at, user_id, COALESCE(visibility, 'private') FROM grafana_configs WHERE is_active = true LIMIT 1`).
+		Scan(&c.ID, &c.Name, &c.Host, &c.Token, &c.DatasourceUID, &c.IsActive, &c.CreatedAt, &c.UserID, &c.Visibility)
 	if err != nil {
 		return nil, err
 	}
 	return &c, nil
 }
 
-func (r *ConfigRepository) SaveGrafana(ctx context.Context, c domain.GrafanaConfig) error {
+func (r *ConfigRepository) SaveGrafana(ctx context.Context, c domain.GrafanaConfig, userID int, userRole string) error {
 	pool, err := database.GetPool()
 	if err != nil {
 		return err
 	}
-	query := `INSERT INTO grafana_configs (id, name, host, token, datasource_uid, is_active)
-              VALUES ($1, $2, $3, $4, $5, $6)
+
+	isAdmin := domain.IsAdminRole(userRole)
+
+	// Check existing
+	if c.ID != "" {
+		var existingOwner *int
+		errExist := pool.QueryRow(ctx, "SELECT user_id FROM grafana_configs WHERE id = $1", c.ID).Scan(&existingOwner)
+		if errExist == nil && !isAdmin && userID > 0 {
+			if existingOwner == nil || *existingOwner != userID {
+				var perm string
+				errShare := pool.QueryRow(ctx, "SELECT permission FROM grafana_shares WHERE config_id = $1 AND user_id = $2", c.ID, userID).Scan(&perm)
+				if errShare != nil || perm != "manage" {
+					return fmt.Errorf("you do not have permission to edit this configuration")
+				}
+			}
+		}
+	}
+
+	var assignedUserID *int
+	if userID > 0 {
+		assignedUserID = &userID
+	}
+	if c.Visibility == "" {
+		c.Visibility = "private"
+	}
+
+	query := `INSERT INTO grafana_configs (id, name, host, token, datasource_uid, is_active, user_id, visibility)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
               ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name, host = EXCLUDED.host, token = EXCLUDED.token,
-                datasource_uid = EXCLUDED.datasource_uid, is_active = EXCLUDED.is_active`
-	_, err = pool.Exec(ctx, query, c.ID, c.Name, c.Host, c.Token, c.DatasourceUID, c.IsActive)
+                datasource_uid = EXCLUDED.datasource_uid, is_active = EXCLUDED.is_active,
+                visibility = COALESCE(NULLIF(EXCLUDED.visibility, ''), grafana_configs.visibility)`
+	_, err = pool.Exec(ctx, query, c.ID, c.Name, c.Host, c.Token, c.DatasourceUID, c.IsActive, assignedUserID, c.Visibility)
 	return err
 }
 
@@ -97,11 +185,27 @@ func (r *ConfigRepository) SetActiveGrafana(ctx context.Context, id string) erro
 	return err
 }
 
-func (r *ConfigRepository) DeleteGrafana(ctx context.Context, id string) error {
+func (r *ConfigRepository) DeleteGrafana(ctx context.Context, id string, userID int, userRole string) error {
 	pool, err := database.GetPool()
 	if err != nil {
 		return err
 	}
+
+	if !domain.IsAdminRole(userRole) && userID > 0 {
+		var ownerID *int
+		errCheck := pool.QueryRow(ctx, "SELECT user_id FROM grafana_configs WHERE id = $1", id).Scan(&ownerID)
+		if errCheck != nil {
+			return fmt.Errorf("configuration not found")
+		}
+		if ownerID == nil || *ownerID != userID {
+			var perm string
+			errShare := pool.QueryRow(ctx, "SELECT permission FROM grafana_shares WHERE config_id = $1 AND user_id = $2", id, userID).Scan(&perm)
+			if errShare != nil || perm != "manage" {
+				return fmt.Errorf("you do not have permission to delete this configuration")
+			}
+		}
+	}
+
 	_, err = pool.Exec(ctx, `DELETE FROM grafana_configs WHERE id = $1`, id)
 	return err
 }
@@ -112,8 +216,8 @@ func (r *ConfigRepository) GetGrafanaByID(ctx context.Context, id string) (*doma
 		return nil, err
 	}
 	var c domain.GrafanaConfig
-	err = pool.QueryRow(ctx, `SELECT id, name, host, token, datasource_uid, is_active, created_at FROM grafana_configs WHERE id = $1`, id).
-		Scan(&c.ID, &c.Name, &c.Host, &c.Token, &c.DatasourceUID, &c.IsActive, &c.CreatedAt)
+	err = pool.QueryRow(ctx, `SELECT id, name, host, token, datasource_uid, is_active, created_at, user_id, COALESCE(visibility, 'private') FROM grafana_configs WHERE id = $1`, id).
+		Scan(&c.ID, &c.Name, &c.Host, &c.Token, &c.DatasourceUID, &c.IsActive, &c.CreatedAt, &c.UserID, &c.Visibility)
 	if err != nil {
 		return nil, err
 	}
@@ -121,24 +225,85 @@ func (r *ConfigRepository) GetGrafanaByID(ctx context.Context, id string) (*doma
 }
 
 // Prometheus Configs
-func (r *ConfigRepository) ListPrometheus(ctx context.Context) ([]domain.PrometheusConfig, error) {
+func (r *ConfigRepository) ListPrometheus(ctx context.Context, userID int, userRole string) ([]domain.PrometheusConfig, error) {
 	pool, err := database.GetPool()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := pool.Query(ctx, `SELECT id, name, mode, path, reload_url, ssh_host, ssh_port, ssh_user, ssh_auth, is_active, created_at FROM prometheus_configs ORDER BY name ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 
+	isAdmin := domain.IsAdminRole(userRole)
 	var list []domain.PrometheusConfig
-	for rows.Next() {
-		var c domain.PrometheusConfig
-		if err := rows.Scan(&c.ID, &c.Name, &c.Mode, &c.Path, &c.ReloadURL, &c.SSHHost, &c.SSHPort, &c.SSHUser, &c.SSHAuth, &c.IsActive, &c.CreatedAt); err != nil {
+
+	if isAdmin || (userID == 0 && userRole == "ADMIN") {
+		query := `
+			SELECT c.id, c.name, c.mode, c.path, c.reload_url, c.ssh_host, c.ssh_port, c.ssh_user, c.ssh_auth, c.is_active, c.created_at,
+			       c.user_id, COALESCE(u.username, 'Admin') AS owner_username, COALESCE(c.visibility, 'private') AS visibility,
+			       (SELECT COUNT(*) FROM prometheus_shares WHERE config_id = c.id) AS shares_count
+			FROM prometheus_configs c
+			LEFT JOIN users u ON c.user_id = u.id
+			ORDER BY c.name ASC
+		`
+		rows, err := pool.Query(ctx, query)
+		if err != nil {
 			return nil, err
 		}
-		list = append(list, c)
+		defer rows.Close()
+
+		for rows.Next() {
+			var c domain.PrometheusConfig
+			if err := rows.Scan(
+				&c.ID, &c.Name, &c.Mode, &c.Path, &c.ReloadURL, &c.SSHHost, &c.SSHPort, &c.SSHUser, &c.SSHAuth, &c.IsActive, &c.CreatedAt,
+				&c.UserID, &c.OwnerUsername, &c.Visibility, &c.SharesCount,
+			); err != nil {
+				return nil, err
+			}
+			c.IsOwner = true
+			c.UserPermission = "manage"
+			list = append(list, c)
+		}
+	} else {
+		query := `
+			SELECT c.id, c.name, c.mode, c.path, c.reload_url, c.ssh_host, c.ssh_port, c.ssh_user, c.ssh_auth, c.is_active, c.created_at,
+			       c.user_id, COALESCE(u.username, 'Admin') AS owner_username, COALESCE(c.visibility, 'private') AS visibility,
+			       (SELECT COUNT(*) FROM prometheus_shares WHERE config_id = c.id) AS shares_count,
+			       COALESCE(ps.permission, '') AS share_perm
+			FROM prometheus_configs c
+			LEFT JOIN users u ON c.user_id = u.id
+			LEFT JOIN prometheus_shares ps ON c.id = ps.config_id AND ps.user_id = $1
+			WHERE c.visibility = 'public'
+			   OR c.user_id = $1
+			   OR ps.user_id = $1
+			ORDER BY c.name ASC
+		`
+		rows, err := pool.Query(ctx, query, userID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var c domain.PrometheusConfig
+			var sharePerm string
+			if err := rows.Scan(
+				&c.ID, &c.Name, &c.Mode, &c.Path, &c.ReloadURL, &c.SSHHost, &c.SSHPort, &c.SSHUser, &c.SSHAuth, &c.IsActive, &c.CreatedAt,
+				&c.UserID, &c.OwnerUsername, &c.Visibility, &c.SharesCount, &sharePerm,
+			); err != nil {
+				return nil, err
+			}
+			c.IsOwner = (c.UserID != nil && *c.UserID == userID)
+			if c.IsOwner {
+				c.UserPermission = "manage"
+			} else if sharePerm != "" {
+				c.UserPermission = sharePerm
+			} else {
+				c.UserPermission = "read"
+			}
+			list = append(list, c)
+		}
+	}
+
+	if list == nil {
+		list = []domain.PrometheusConfig{}
 	}
 	return list, nil
 }
@@ -149,8 +314,8 @@ func (r *ConfigRepository) GetPrometheusByID(ctx context.Context, id string) (*d
 		return nil, err
 	}
 	var c domain.PrometheusConfig
-	err = pool.QueryRow(ctx, `SELECT id, name, mode, path, reload_url, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_password, ssh_key, is_active, created_at FROM prometheus_configs WHERE id = $1`, id).
-		Scan(&c.ID, &c.Name, &c.Mode, &c.Path, &c.ReloadURL, &c.SSHHost, &c.SSHPort, &c.SSHUser, &c.SSHAuth, &c.SSHPassword, &c.SSHKey, &c.IsActive, &c.CreatedAt)
+	err = pool.QueryRow(ctx, `SELECT id, name, mode, path, reload_url, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_password, ssh_key, is_active, created_at, user_id, COALESCE(visibility, 'private') FROM prometheus_configs WHERE id = $1`, id).
+		Scan(&c.ID, &c.Name, &c.Mode, &c.Path, &c.ReloadURL, &c.SSHHost, &c.SSHPort, &c.SSHUser, &c.SSHAuth, &c.SSHPassword, &c.SSHKey, &c.IsActive, &c.CreatedAt, &c.UserID, &c.Visibility)
 	if err != nil {
 		return nil, err
 	}
@@ -208,10 +373,27 @@ func (r *ConfigRepository) GetActivePrometheus(ctx context.Context) (*domain.Pro
 	return &c, nil
 }
 
-func (r *ConfigRepository) SavePrometheus(ctx context.Context, c domain.PrometheusConfig) error {
+func (r *ConfigRepository) SavePrometheus(ctx context.Context, c domain.PrometheusConfig, userID int, userRole string) error {
 	pool, err := database.GetPool()
 	if err != nil {
 		return err
+	}
+
+	isAdmin := domain.IsAdminRole(userRole)
+
+	// Check existing
+	if c.ID != "" {
+		var existingOwner *int
+		errExist := pool.QueryRow(ctx, "SELECT user_id FROM prometheus_configs WHERE id = $1", c.ID).Scan(&existingOwner)
+		if errExist == nil && !isAdmin && userID > 0 {
+			if existingOwner == nil || *existingOwner != userID {
+				var perm string
+				errShare := pool.QueryRow(ctx, "SELECT permission FROM prometheus_shares WHERE config_id = $1 AND user_id = $2", c.ID, userID).Scan(&perm)
+				if errShare != nil || perm != "manage" {
+					return fmt.Errorf("you do not have permission to edit this configuration")
+				}
+			}
+		}
 	}
 
 	var encPwd, encKey *string
@@ -226,13 +408,22 @@ func (r *ConfigRepository) SavePrometheus(ctx context.Context, c domain.Promethe
 		}
 	}
 
-	query := `INSERT INTO prometheus_configs (id, name, mode, path, reload_url, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_password, ssh_key, is_active)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	var assignedUserID *int
+	if userID > 0 {
+		assignedUserID = &userID
+	}
+	if c.Visibility == "" {
+		c.Visibility = "private"
+	}
+
+	query := `INSERT INTO prometheus_configs (id, name, mode, path, reload_url, ssh_host, ssh_port, ssh_user, ssh_auth, ssh_password, ssh_key, is_active, user_id, visibility)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
               ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name, mode = EXCLUDED.mode, path = EXCLUDED.path, reload_url = EXCLUDED.reload_url,
                 ssh_host = EXCLUDED.ssh_host, ssh_port = EXCLUDED.ssh_port, ssh_user = EXCLUDED.ssh_user,
-                ssh_auth = EXCLUDED.ssh_auth, is_active = EXCLUDED.is_active`
-	_, err = pool.Exec(ctx, query, c.ID, c.Name, c.Mode, c.Path, c.ReloadURL, c.SSHHost, c.SSHPort, c.SSHUser, c.SSHAuth, encPwd, encKey, c.IsActive)
+                ssh_auth = EXCLUDED.ssh_auth, is_active = EXCLUDED.is_active,
+                visibility = COALESCE(NULLIF(EXCLUDED.visibility, ''), prometheus_configs.visibility)`
+	_, err = pool.Exec(ctx, query, c.ID, c.Name, c.Mode, c.Path, c.ReloadURL, c.SSHHost, c.SSHPort, c.SSHUser, c.SSHAuth, encPwd, encKey, c.IsActive, assignedUserID, c.Visibility)
 	return err
 }
 
@@ -246,11 +437,27 @@ func (r *ConfigRepository) SetActivePrometheus(ctx context.Context, id string) e
 	return err
 }
 
-func (r *ConfigRepository) DeletePrometheus(ctx context.Context, id string) error {
+func (r *ConfigRepository) DeletePrometheus(ctx context.Context, id string, userID int, userRole string) error {
 	pool, err := database.GetPool()
 	if err != nil {
 		return err
 	}
+
+	if !domain.IsAdminRole(userRole) && userID > 0 {
+		var ownerID *int
+		errCheck := pool.QueryRow(ctx, "SELECT user_id FROM prometheus_configs WHERE id = $1", id).Scan(&ownerID)
+		if errCheck != nil {
+			return fmt.Errorf("configuration not found")
+		}
+		if ownerID == nil || *ownerID != userID {
+			var perm string
+			errShare := pool.QueryRow(ctx, "SELECT permission FROM prometheus_shares WHERE config_id = $1 AND user_id = $2", id, userID).Scan(&perm)
+			if errShare != nil || perm != "manage" {
+				return fmt.Errorf("you do not have permission to delete this configuration")
+			}
+		}
+	}
+
 	_, err = pool.Exec(ctx, `DELETE FROM prometheus_configs WHERE id = $1`, id)
 	return err
 }

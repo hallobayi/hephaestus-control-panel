@@ -55,13 +55,17 @@ func (s *VaultwardenService) StartBackgroundSync(stopChan <-chan struct{}) {
 			case <-stopChan:
 				return
 			case <-ticker.C:
-				cfg, err := s.repo.GetConfig(context.Background())
-				if err == nil && cfg != nil && cfg.ServerURL != "" && cfg.MasterPassword != "" && cfg.IsActive {
-					_, syncErr := s.SyncVault(context.Background())
-					if syncErr != nil {
-						logger.Warn("Vaultwarden", fmt.Sprintf("Background auto-sync failed: %v", syncErr))
-					} else {
-						logger.Info("Vaultwarden", "Background auto-sync completed successfully.")
+				configs, err := s.repo.ListAllActiveConfigs(context.Background())
+				if err == nil {
+					for _, c := range configs {
+						uid := 0
+						if c.UserID != nil {
+							uid = *c.UserID
+						}
+						_, syncErr := s.SyncVault(context.Background(), uid, "ADMIN", c.ID)
+						if syncErr != nil {
+							logger.Warn("Vaultwarden", fmt.Sprintf("Background auto-sync failed for config %s: %v", c.Name, syncErr))
+						}
 					}
 				}
 			}
@@ -145,8 +149,8 @@ func (s *VaultwardenService) TestConnection(ctx context.Context, serverURL, emai
 }
 
 // SyncVault triggers an immediate synchronization, decrypts all credentials, and stores them in local cache
-func (s *VaultwardenService) SyncVault(ctx context.Context) (*domain.VaultSyncResponse, error) {
-	cfg, err := s.repo.GetConfig(ctx)
+func (s *VaultwardenService) SyncVault(ctx context.Context, userID int, userRole string, configID ...string) (*domain.VaultSyncResponse, error) {
+	cfg, err := s.repo.GetConfig(ctx, userID, userRole, configID...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve vaultwarden configuration: %w", err)
 	}
@@ -187,8 +191,8 @@ func (s *VaultwardenService) SyncVault(ctx context.Context) (*domain.VaultSyncRe
 }
 
 // GetCiphers returns credentials with optional keyword and folder filtering
-func (s *VaultwardenService) GetCiphers(ctx context.Context, keyword, folder string) ([]domain.VaultCredentialItem, error) {
-	cfg, err := s.repo.GetConfig(ctx)
+func (s *VaultwardenService) GetCiphers(ctx context.Context, userID int, userRole string, keyword, folder string, configID ...string) ([]domain.VaultCredentialItem, error) {
+	cfg, err := s.repo.GetConfig(ctx, userID, userRole, configID...)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +203,7 @@ func (s *VaultwardenService) GetCiphers(ctx context.Context, keyword, folder str
 	items := cfg.CachedCiphers
 	// If cache is empty and config exists, perform initial sync
 	if len(items) == 0 && cfg.MasterPassword != "" {
-		syncRes, err := s.SyncVault(ctx)
+		syncRes, err := s.SyncVault(ctx, userID, userRole, cfg.ID)
 		if err == nil && syncRes != nil {
 			items = syncRes.Items
 		}
@@ -747,8 +751,8 @@ func (s *VaultwardenService) encryptCipherString(plaintext string, encKey, macKe
 }
 
 // CreateCipher encrypts and posts a new credential directly to the remote Vaultwarden instance
-func (s *VaultwardenService) CreateCipher(ctx context.Context, req domain.CreateVaultCipherRequest) (*domain.VaultCredentialItem, error) {
-	cfg, err := s.repo.GetConfig(ctx)
+func (s *VaultwardenService) CreateCipher(ctx context.Context, userID int, userRole string, req domain.CreateVaultCipherRequest, configID ...string) (*domain.VaultCredentialItem, error) {
+	cfg, err := s.repo.GetConfig(ctx, userID, userRole, configID...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve vaultwarden configuration: %w", err)
 	}
@@ -851,7 +855,7 @@ func (s *VaultwardenService) CreateCipher(ctx context.Context, req domain.Create
 
 	// Sync local vault cache in background
 	go func() {
-		_, _ = s.SyncVault(context.Background())
+		_, _ = s.SyncVault(context.Background(), userID, userRole, cfg.ID)
 	}()
 
 	uris := []string{}
@@ -873,13 +877,13 @@ func (s *VaultwardenService) CreateCipher(ctx context.Context, req domain.Create
 }
 
 // DeleteCipher removes a credential item from the remote Vaultwarden instance
-func (s *VaultwardenService) DeleteCipher(ctx context.Context, cipherID string) error {
+func (s *VaultwardenService) DeleteCipher(ctx context.Context, userID int, userRole string, cipherID string, configID ...string) error {
 	cipherID = strings.TrimSpace(cipherID)
 	if cipherID == "" {
 		return errors.New("cipher ID is required")
 	}
 
-	cfg, err := s.repo.GetConfig(ctx)
+	cfg, err := s.repo.GetConfig(ctx, userID, userRole, configID...)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve vaultwarden configuration: %w", err)
 	}
@@ -912,18 +916,18 @@ func (s *VaultwardenService) DeleteCipher(ctx context.Context, cipherID string) 
 	}
 
 	// Trigger vault sync to update local cache
-	_, err = s.SyncVault(ctx)
+	_, err = s.SyncVault(ctx, userID, userRole, cfg.ID)
 	return err
 }
 
 // UpdateCipher encrypts and updates an existing credential directly in the remote Vaultwarden instance
-func (s *VaultwardenService) UpdateCipher(ctx context.Context, cipherID string, req domain.CreateVaultCipherRequest) (*domain.VaultCredentialItem, error) {
+func (s *VaultwardenService) UpdateCipher(ctx context.Context, userID int, userRole string, cipherID string, req domain.CreateVaultCipherRequest, configID ...string) (*domain.VaultCredentialItem, error) {
 	cipherID = strings.TrimSpace(cipherID)
 	if cipherID == "" {
 		return nil, errors.New("cipher ID is required")
 	}
 
-	cfg, err := s.repo.GetConfig(ctx)
+	cfg, err := s.repo.GetConfig(ctx, userID, userRole, configID...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve vaultwarden configuration: %w", err)
 	}
@@ -1028,6 +1032,9 @@ func (s *VaultwardenService) UpdateCipher(ctx context.Context, cipherID string, 
 	if req.URI != "" {
 		uris = append(uris, req.URI)
 	}
+
+	// Trigger vault sync to refresh cache
+	_, _ = s.SyncVault(ctx, userID, userRole, cfg.ID)
 
 	return &domain.VaultCredentialItem{
 		ID:           cipherID,

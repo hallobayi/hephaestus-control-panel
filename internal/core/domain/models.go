@@ -78,6 +78,12 @@ type GrafanaConfig struct {
 	Token         string    `json:"token"`
 	DatasourceUID string    `json:"datasourceUid"`
 	IsActive      bool      `json:"isActive"`
+	UserID        *int      `json:"userId,omitempty"`
+	OwnerUsername string    `json:"ownerUsername,omitempty"`
+	Visibility    string    `json:"visibility"`
+	IsOwner       bool      `json:"isOwner"`
+	UserPermission string   `json:"userPermission,omitempty"`
+	SharesCount   int       `json:"sharesCount"`
 	CreatedAt     time.Time `json:"createdAt"`
 }
 
@@ -94,6 +100,12 @@ type PrometheusConfig struct {
 	SSHPassword *string   `json:"sshPassword,omitempty"`
 	SSHKey      *string   `json:"sshKey,omitempty"`
 	IsActive    bool      `json:"isActive"`
+	UserID      *int      `json:"userId,omitempty"`
+	OwnerUsername string  `json:"ownerUsername,omitempty"`
+	Visibility  string    `json:"visibility"`
+	IsOwner     bool      `json:"isOwner"`
+	UserPermission string `json:"userPermission,omitempty"`
+	SharesCount int       `json:"sharesCount"`
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
@@ -112,6 +124,12 @@ type OpenTelemetryConfig struct {
 	ReloadMode  string     `json:"reloadMode"`
 	LastStatus  string     `json:"lastStatus"`
 	IsActive    bool       `json:"isActive"`
+	UserID      *int       `json:"userId,omitempty"`
+	OwnerUsername string   `json:"ownerUsername,omitempty"`
+	Visibility  string     `json:"visibility"`
+	IsOwner     bool       `json:"isOwner"`
+	UserPermission string  `json:"userPermission,omitempty"`
+	SharesCount int        `json:"sharesCount"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
 }
@@ -171,6 +189,12 @@ type DataPrepperConfig struct {
 	SSHPassword  *string   `json:"sshPassword,omitempty"`
 	SSHKey       *string   `json:"sshKey,omitempty"`
 	IsActive     bool      `json:"isActive"`
+	UserID       *int      `json:"userId,omitempty"`
+	OwnerUsername string   `json:"ownerUsername,omitempty"`
+	Visibility   string    `json:"visibility"`
+	IsOwner      bool      `json:"isOwner"`
+	UserPermission string  `json:"userPermission,omitempty"`
+	SharesCount  int       `json:"sharesCount"`
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
@@ -184,6 +208,12 @@ type OpenSearchConfig struct {
 	UseSSL    bool      `json:"useSsl"`
 	VerifySSL bool      `json:"verifySsl"`
 	IsActive  bool      `json:"isActive"`
+	UserID    *int      `json:"userId,omitempty"`
+	OwnerUsername string `json:"ownerUsername,omitempty"`
+	Visibility string   `json:"visibility"`
+	IsOwner   bool      `json:"isOwner"`
+	UserPermission string `json:"userPermission,omitempty"`
+	SharesCount int     `json:"sharesCount"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -520,8 +550,25 @@ type VaultwardenConfig struct {
 	IsActive       bool                  `json:"isActive"`
 	LastSyncedAt   *time.Time            `json:"lastSyncedAt,omitempty"`
 	CachedCiphers  []VaultCredentialItem `json:"cachedCiphers,omitempty"`
+	UserID         *int                  `json:"userId,omitempty"`
+	OwnerUsername  string                `json:"ownerUsername,omitempty"`
+	Visibility     string                `json:"visibility"`
+	IsOwner        bool                  `json:"isOwner"`
+	UserPermission string                `json:"userPermission,omitempty"`
+	SharesCount    int                   `json:"sharesCount"`
 	CreatedAt      time.Time             `json:"createdAt"`
 	UpdatedAt      time.Time             `json:"updatedAt"`
+}
+
+type ConnectionShare struct {
+	ID               string    `json:"id"`
+	ConfigID         string    `json:"configId"`
+	UserID           int       `json:"userId"`
+	Username         string    `json:"username,omitempty"`
+	Permission       string    `json:"permission"` // "read" or "manage"
+	SharedBy         *int      `json:"sharedBy,omitempty"`
+	SharedByUsername string    `json:"sharedByUsername,omitempty"`
+	CreatedAt        time.Time `json:"createdAt"`
 }
 
 type VaultCredentialItem struct {
@@ -575,10 +622,16 @@ type DockerConnection struct {
 	SSHAuth     *string   `json:"sshAuth,omitempty"`
 	SSHPassword *string   `json:"sshPassword,omitempty"`
 	SSHKey      *string   `json:"sshKey,omitempty"`
-	IsActive    bool      `json:"isActive"`
-	IsDefault   bool      `json:"isDefault"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	IsActive     bool      `json:"isActive"`
+	IsDefault    bool      `json:"isDefault"`
+	UserID       *int      `json:"userId,omitempty"`
+	OwnerUsername string   `json:"ownerUsername,omitempty"`
+	Visibility   string    `json:"visibility"`
+	IsOwner      bool      `json:"isOwner"`
+	UserPermission string  `json:"userPermission,omitempty"`
+	SharesCount  int       `json:"sharesCount"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 type DockerContainerPort struct {

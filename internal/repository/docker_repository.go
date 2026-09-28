@@ -69,11 +69,25 @@ func (r *DockerRepository) ensureTable(ctx context.Context, pool *pgxpool.Pool) 
 		);
 		CREATE INDEX IF NOT EXISTS idx_docker_container_shares_container ON docker_container_shares(connection_id, container_id);
 		CREATE INDEX IF NOT EXISTS idx_docker_container_shares_user ON docker_container_shares(user_id);
+
+		ALTER TABLE docker_connections ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+		ALTER TABLE docker_connections ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'private';
+		CREATE TABLE IF NOT EXISTS docker_connection_shares (
+			id VARCHAR(50) PRIMARY KEY,
+			connection_id VARCHAR(50) NOT NULL REFERENCES docker_connections(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			permission VARCHAR(20) NOT NULL DEFAULT 'read',
+			shared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(connection_id, user_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_docker_conn_shares_conn_id ON docker_connection_shares(connection_id);
+		CREATE INDEX IF NOT EXISTS idx_docker_conn_shares_user_id ON docker_connection_shares(user_id);
 	`)
 }
 
 // ListConnections retrieves all configured Docker hosts
-func (r *DockerRepository) ListConnections(ctx context.Context) ([]domain.DockerConnection, error) {
+func (r *DockerRepository) ListConnections(ctx context.Context, userOpt ...interface{}) ([]domain.DockerConnection, error) {
 	pool, err := database.GetPool()
 	if err != nil {
 		return nil, err
@@ -81,12 +95,49 @@ func (r *DockerRepository) ListConnections(ctx context.Context) ([]domain.Docker
 
 	r.ensureTable(ctx, pool)
 
-	rows, err := pool.Query(ctx, `
-		SELECT id, name, host_type, COALESCE(socket_path, ''), COALESCE(tcp_url, ''), remote_host_id,
-		       ssh_host, ssh_port, ssh_user, ssh_auth, is_active, is_default, created_at, updated_at
-		FROM docker_connections
-		ORDER BY is_default DESC, name ASC
-	`)
+	var userID int
+	var userRole string
+	if len(userOpt) >= 2 {
+		if id, ok := userOpt[0].(int); ok {
+			userID = id
+		}
+		if role, ok := userOpt[1].(string); ok {
+			userRole = role
+		}
+	}
+
+	isAdmin := domain.IsAdminRole(userRole) || (userID == 0 && userRole == "ADMIN") || len(userOpt) == 0
+
+	var rows pgx.Rows
+	if isAdmin {
+		query := `
+			SELECT c.id, c.name, c.host_type, COALESCE(c.socket_path, ''), COALESCE(c.tcp_url, ''), c.remote_host_id,
+			       c.ssh_host, c.ssh_port, c.ssh_user, c.ssh_auth, c.is_active, c.is_default, c.created_at, c.updated_at,
+			       c.user_id, COALESCE(u.username, 'Admin') AS owner_username, COALESCE(c.visibility, 'private') AS visibility,
+			       (SELECT COUNT(*) FROM docker_connection_shares WHERE connection_id = c.id) AS shares_count
+			FROM docker_connections c
+			LEFT JOIN users u ON c.user_id = u.id
+			ORDER BY c.is_default DESC, c.name ASC
+		`
+		rows, err = pool.Query(ctx, query)
+	} else {
+		query := `
+			SELECT c.id, c.name, c.host_type, COALESCE(c.socket_path, ''), COALESCE(c.tcp_url, ''), c.remote_host_id,
+			       c.ssh_host, c.ssh_port, c.ssh_user, c.ssh_auth, c.is_active, c.is_default, c.created_at, c.updated_at,
+			       c.user_id, COALESCE(u.username, 'Admin') AS owner_username, COALESCE(c.visibility, 'private') AS visibility,
+			       (SELECT COUNT(*) FROM docker_connection_shares WHERE connection_id = c.id) AS shares_count,
+			       COALESCE(dcs.permission, '') AS share_perm
+			FROM docker_connections c
+			LEFT JOIN users u ON c.user_id = u.id
+			LEFT JOIN docker_connection_shares dcs ON c.id = dcs.connection_id AND dcs.user_id = $1
+			WHERE c.visibility = 'public'
+			   OR c.user_id = $1
+			   OR dcs.user_id = $1
+			ORDER BY c.is_default DESC, c.name ASC
+		`
+		rows, err = pool.Query(ctx, query, userID)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to query docker_connections: %w", err)
 	}
@@ -95,12 +146,35 @@ func (r *DockerRepository) ListConnections(ctx context.Context) ([]domain.Docker
 	var connections []domain.DockerConnection
 	for rows.Next() {
 		var c domain.DockerConnection
-		if err := rows.Scan(
-			&c.ID, &c.Name, &c.HostType, &c.SocketPath, &c.TcpURL, &c.RemoteHostID,
-			&c.SSHHost, &c.SSHPort, &c.SSHUser, &c.SSHAuth, &c.IsActive, &c.IsDefault, &c.CreatedAt, &c.UpdatedAt,
-		); err != nil {
-			return nil, err
+		var sharePerm string
+		if isAdmin {
+			if err := rows.Scan(
+				&c.ID, &c.Name, &c.HostType, &c.SocketPath, &c.TcpURL, &c.RemoteHostID,
+				&c.SSHHost, &c.SSHPort, &c.SSHUser, &c.SSHAuth, &c.IsActive, &c.IsDefault, &c.CreatedAt, &c.UpdatedAt,
+				&c.UserID, &c.OwnerUsername, &c.Visibility, &c.SharesCount,
+			); err != nil {
+				return nil, err
+			}
+			c.IsOwner = true
+			c.UserPermission = "manage"
+		} else {
+			if err := rows.Scan(
+				&c.ID, &c.Name, &c.HostType, &c.SocketPath, &c.TcpURL, &c.RemoteHostID,
+				&c.SSHHost, &c.SSHPort, &c.SSHUser, &c.SSHAuth, &c.IsActive, &c.IsDefault, &c.CreatedAt, &c.UpdatedAt,
+				&c.UserID, &c.OwnerUsername, &c.Visibility, &c.SharesCount, &sharePerm,
+			); err != nil {
+				return nil, err
+			}
+			c.IsOwner = (c.UserID != nil && *c.UserID == userID)
+			if c.IsOwner {
+				c.UserPermission = "manage"
+			} else if sharePerm != "" {
+				c.UserPermission = sharePerm
+			} else {
+				c.UserPermission = "read"
+			}
 		}
+
 		if c.HostType == "local" || c.HostType == "socket" || c.HostType == "" {
 			c.Driver = "socket"
 			c.HostType = "local"
@@ -113,8 +187,8 @@ func (r *DockerRepository) ListConnections(ctx context.Context) ([]domain.Docker
 		connections = append(connections, c)
 	}
 
-	// Auto-seed default local connection if table is completely empty
-	if len(connections) == 0 {
+	// Auto-seed default local connection if table is completely empty and admin
+	if len(connections) == 0 && isAdmin {
 		defaultConn := domain.DockerConnection{
 			ID:         "docker-local-default",
 			Name:       "Local Docker Host",
@@ -123,6 +197,7 @@ func (r *DockerRepository) ListConnections(ctx context.Context) ([]domain.Docker
 			SocketPath: "/var/run/docker.sock",
 			IsActive:   true,
 			IsDefault:  true,
+			Visibility: "public",
 		}
 		saved, err := r.SaveConnection(ctx, defaultConn)
 		if err == nil && saved != nil {
@@ -130,6 +205,10 @@ func (r *DockerRepository) ListConnections(ctx context.Context) ([]domain.Docker
 		} else {
 			connections = append(connections, defaultConn)
 		}
+	}
+
+	if connections == nil {
+		connections = []domain.DockerConnection{}
 	}
 
 	return connections, nil
@@ -226,13 +305,41 @@ func (r *DockerRepository) GetDefaultConnection(ctx context.Context) (*domain.Do
 }
 
 // SaveConnection creates or updates a Docker connection configuration
-func (r *DockerRepository) SaveConnection(ctx context.Context, c domain.DockerConnection) (*domain.DockerConnection, error) {
+func (r *DockerRepository) SaveConnection(ctx context.Context, c domain.DockerConnection, userOpt ...interface{}) (*domain.DockerConnection, error) {
 	pool, err := database.GetPool()
 	if err != nil {
 		return nil, err
 	}
 
 	r.ensureTable(ctx, pool)
+
+	var userID int
+	var userRole string
+	if len(userOpt) >= 2 {
+		if id, ok := userOpt[0].(int); ok {
+			userID = id
+		}
+		if role, ok := userOpt[1].(string); ok {
+			userRole = role
+		}
+	}
+
+	isAdmin := domain.IsAdminRole(userRole) || (userID == 0 && userRole == "ADMIN") || len(userOpt) == 0
+
+	// Check if updating existing connection
+	if c.ID != "" {
+		var existingOwner *int
+		errExist := pool.QueryRow(ctx, "SELECT user_id FROM docker_connections WHERE id = $1", c.ID).Scan(&existingOwner)
+		if errExist == nil && !isAdmin && userID > 0 {
+			if existingOwner == nil || *existingOwner != userID {
+				var perm string
+				errShare := pool.QueryRow(ctx, "SELECT permission FROM docker_connection_shares WHERE connection_id = $1 AND user_id = $2", c.ID, userID).Scan(&perm)
+				if errShare != nil || perm != "manage" {
+					return nil, fmt.Errorf("you do not have permission to edit this Docker connection")
+				}
+			}
+		}
+	}
 
 	if c.ID == "" {
 		c.ID = fmt.Sprintf("docker-%s", uuid.New().String()[:8])
@@ -306,13 +413,23 @@ func (r *DockerRepository) SaveConnection(ctx context.Context, c domain.DockerCo
 		_, _ = pool.Exec(ctx, `UPDATE docker_connections SET is_default = false WHERE id <> $1`, c.ID)
 	}
 
+	var assignedUserID *int
+	if userID > 0 {
+		assignedUserID = &userID
+	} else if c.UserID != nil {
+		assignedUserID = c.UserID
+	}
+	if c.Visibility == "" {
+		c.Visibility = "private"
+	}
+
 	now := time.Now()
 	_, err = pool.Exec(ctx, `
 		INSERT INTO docker_connections (
 			id, name, host_type, socket_path, tcp_url, remote_host_id,
 			ssh_host, ssh_port, ssh_user, ssh_auth, ssh_password_encrypted, ssh_key_encrypted,
-			is_active, is_default, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+			is_active, is_default, user_id, visibility, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			host_type = EXCLUDED.host_type,
@@ -327,10 +444,11 @@ func (r *DockerRepository) SaveConnection(ctx context.Context, c domain.DockerCo
 			ssh_key_encrypted = CASE WHEN EXCLUDED.ssh_key_encrypted IS NOT NULL THEN EXCLUDED.ssh_key_encrypted ELSE docker_connections.ssh_key_encrypted END,
 			is_active = EXCLUDED.is_active,
 			is_default = EXCLUDED.is_default,
+			visibility = COALESCE(NULLIF(EXCLUDED.visibility, ''), docker_connections.visibility),
 			updated_at = EXCLUDED.updated_at
 	`, c.ID, c.Name, c.HostType, c.SocketPath, c.TcpURL, c.RemoteHostID,
 		c.SSHHost, c.SSHPort, c.SSHUser, c.SSHAuth, encPassword, encKey,
-		c.IsActive, c.IsDefault, now)
+		c.IsActive, c.IsDefault, assignedUserID, c.Visibility, now)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to save docker connection: %w", err)
@@ -363,10 +481,36 @@ func (r *DockerRepository) SetDefaultConnection(ctx context.Context, id string) 
 }
 
 // DeleteConnection removes a Docker connection
-func (r *DockerRepository) DeleteConnection(ctx context.Context, id string) error {
+func (r *DockerRepository) DeleteConnection(ctx context.Context, id string, userOpt ...interface{}) error {
 	pool, err := database.GetPool()
 	if err != nil {
 		return err
+	}
+
+	var userID int
+	var userRole string
+	if len(userOpt) >= 2 {
+		if uid, ok := userOpt[0].(int); ok {
+			userID = uid
+		}
+		if role, ok := userOpt[1].(string); ok {
+			userRole = role
+		}
+	}
+
+	if !domain.IsAdminRole(userRole) && userID > 0 {
+		var ownerID *int
+		errCheck := pool.QueryRow(ctx, "SELECT user_id FROM docker_connections WHERE id = $1", id).Scan(&ownerID)
+		if errCheck != nil {
+			return fmt.Errorf("Docker connection not found")
+		}
+		if ownerID == nil || *ownerID != userID {
+			var perm string
+			errShare := pool.QueryRow(ctx, "SELECT permission FROM docker_connection_shares WHERE connection_id = $1 AND user_id = $2", id, userID).Scan(&perm)
+			if errShare != nil || perm != "manage" {
+				return fmt.Errorf("you do not have permission to delete this Docker connection")
+			}
+		}
 	}
 
 	_, err = pool.Exec(ctx, `DELETE FROM docker_connections WHERE id = $1`, id)

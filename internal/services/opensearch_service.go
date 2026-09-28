@@ -81,7 +81,8 @@ func (s *OpenSearchService) GetActiveConfig(ctx context.Context) (*domain.OpenSe
 	}
 
 	query := `
-		SELECT id, name, host, port, username, password, use_ssl, verify_ssl, is_active, created_at
+		SELECT id, name, host, port, username, password, use_ssl, verify_ssl, is_active, created_at,
+		       user_id, COALESCE(visibility, 'private')
 		FROM opensearch_configs
 		WHERE is_active = true
 		ORDER BY created_at DESC
@@ -91,6 +92,7 @@ func (s *OpenSearchService) GetActiveConfig(ctx context.Context) (*domain.OpenSe
 	err = pool.QueryRow(ctx, query).Scan(
 		&cfg.ID, &cfg.Name, &cfg.Host, &cfg.Port, &cfg.Username,
 		&cfg.Password, &cfg.UseSSL, &cfg.VerifySSL, &cfg.IsActive, &cfg.CreatedAt,
+		&cfg.UserID, &cfg.Visibility,
 	)
 	if err != nil {
 		return nil, err
@@ -103,6 +105,170 @@ func (s *OpenSearchService) GetActiveConfig(ctx context.Context) (*domain.OpenSe
 	}
 
 	return &cfg, nil
+}
+
+func (s *OpenSearchService) GetActiveConfigForUser(ctx context.Context, userID int, userRole string) (*domain.OpenSearchConfig, error) {
+	pool, err := database.GetPool()
+	if err != nil {
+		return nil, fmt.Errorf("database connection unavailable: %w", err)
+	}
+
+	isAdmin := domain.IsAdminRole(userRole)
+	var query string
+	var args []interface{}
+
+	if isAdmin || (userID == 0 && userRole == "ADMIN") {
+		query = `
+			SELECT c.id, c.name, c.host, c.port, c.username, c.password, c.use_ssl, c.verify_ssl, c.is_active, c.created_at,
+			       c.user_id, COALESCE(u.username, 'Admin') AS owner_username, COALESCE(c.visibility, 'private') AS visibility,
+			       (SELECT COUNT(*) FROM opensearch_shares WHERE config_id = c.id) AS shares_count
+			FROM opensearch_configs c
+			LEFT JOIN users u ON c.user_id = u.id
+			WHERE c.is_active = true
+			ORDER BY c.created_at DESC
+			LIMIT 1
+		`
+	} else {
+		query = `
+			SELECT c.id, c.name, c.host, c.port, c.username, c.password, c.use_ssl, c.verify_ssl, c.is_active, c.created_at,
+			       c.user_id, COALESCE(u.username, 'Admin') AS owner_username, COALESCE(c.visibility, 'private') AS visibility,
+			       (SELECT COUNT(*) FROM opensearch_shares WHERE config_id = c.id) AS shares_count,
+			       COALESCE(oss.permission, '') AS share_perm
+			FROM opensearch_configs c
+			LEFT JOIN users u ON c.user_id = u.id
+			LEFT JOIN opensearch_shares oss ON c.id = oss.config_id AND oss.user_id = $1
+			WHERE c.is_active = true
+			  AND (c.visibility = 'public' OR c.user_id = $1 OR oss.user_id = $1)
+			ORDER BY (c.user_id = $1) DESC, c.created_at DESC
+			LIMIT 1
+		`
+		args = append(args, userID)
+	}
+
+	var cfg domain.OpenSearchConfig
+	var sharePerm string
+	var errScan error
+
+	if isAdmin || (userID == 0 && userRole == "ADMIN") {
+		errScan = pool.QueryRow(ctx, query).Scan(
+			&cfg.ID, &cfg.Name, &cfg.Host, &cfg.Port, &cfg.Username,
+			&cfg.Password, &cfg.UseSSL, &cfg.VerifySSL, &cfg.IsActive, &cfg.CreatedAt,
+			&cfg.UserID, &cfg.OwnerUsername, &cfg.Visibility, &cfg.SharesCount,
+		)
+		cfg.IsOwner = true
+		cfg.UserPermission = "manage"
+	} else {
+		errScan = pool.QueryRow(ctx, query, args...).Scan(
+			&cfg.ID, &cfg.Name, &cfg.Host, &cfg.Port, &cfg.Username,
+			&cfg.Password, &cfg.UseSSL, &cfg.VerifySSL, &cfg.IsActive, &cfg.CreatedAt,
+			&cfg.UserID, &cfg.OwnerUsername, &cfg.Visibility, &cfg.SharesCount, &sharePerm,
+		)
+		cfg.IsOwner = (cfg.UserID != nil && *cfg.UserID == userID)
+		if cfg.IsOwner {
+			cfg.UserPermission = "manage"
+		} else if sharePerm != "" {
+			cfg.UserPermission = sharePerm
+		} else {
+			cfg.UserPermission = "read"
+		}
+	}
+
+	if errScan != nil {
+		return nil, errScan
+	}
+
+	if cfg.Password != "" {
+		if decrypted, err := config.DecryptText(cfg.Password); err == nil {
+			cfg.Password = decrypted
+		}
+	}
+
+	return &cfg, nil
+}
+
+func (s *OpenSearchService) ListConfigs(ctx context.Context, userID int, userRole string) ([]domain.OpenSearchConfig, error) {
+	pool, err := database.GetPool()
+	if err != nil {
+		return nil, fmt.Errorf("database connection unavailable: %w", err)
+	}
+
+	isAdmin := domain.IsAdminRole(userRole)
+	var list []domain.OpenSearchConfig
+
+	if isAdmin || (userID == 0 && userRole == "ADMIN") {
+		query := `
+			SELECT c.id, c.name, c.host, c.port, c.username, c.password, c.use_ssl, c.verify_ssl, c.is_active, c.created_at,
+			       c.user_id, COALESCE(u.username, 'Admin') AS owner_username, COALESCE(c.visibility, 'private') AS visibility,
+			       (SELECT COUNT(*) FROM opensearch_shares WHERE config_id = c.id) AS shares_count
+			FROM opensearch_configs c
+			LEFT JOIN users u ON c.user_id = u.id
+			ORDER BY c.is_active DESC, c.name ASC
+		`
+		rows, err := pool.Query(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var c domain.OpenSearchConfig
+			if err := rows.Scan(
+				&c.ID, &c.Name, &c.Host, &c.Port, &c.Username,
+				&c.Password, &c.UseSSL, &c.VerifySSL, &c.IsActive, &c.CreatedAt,
+				&c.UserID, &c.OwnerUsername, &c.Visibility, &c.SharesCount,
+			); err != nil {
+				return nil, err
+			}
+			c.IsOwner = true
+			c.UserPermission = "manage"
+			list = append(list, c)
+		}
+	} else {
+		query := `
+			SELECT c.id, c.name, c.host, c.port, c.username, c.password, c.use_ssl, c.verify_ssl, c.is_active, c.created_at,
+			       c.user_id, COALESCE(u.username, 'Admin') AS owner_username, COALESCE(c.visibility, 'private') AS visibility,
+			       (SELECT COUNT(*) FROM opensearch_shares WHERE config_id = c.id) AS shares_count,
+			       COALESCE(oss.permission, '') AS share_perm
+			FROM opensearch_configs c
+			LEFT JOIN users u ON c.user_id = u.id
+			LEFT JOIN opensearch_shares oss ON c.id = oss.config_id AND oss.user_id = $1
+			WHERE c.visibility = 'public'
+			   OR c.user_id = $1
+			   OR oss.user_id = $1
+			ORDER BY c.is_active DESC, c.name ASC
+		`
+		rows, err := pool.Query(ctx, query, userID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var c domain.OpenSearchConfig
+			var sharePerm string
+			if err := rows.Scan(
+				&c.ID, &c.Name, &c.Host, &c.Port, &c.Username,
+				&c.Password, &c.UseSSL, &c.VerifySSL, &c.IsActive, &c.CreatedAt,
+				&c.UserID, &c.OwnerUsername, &c.Visibility, &c.SharesCount, &sharePerm,
+			); err != nil {
+				return nil, err
+			}
+			c.IsOwner = (c.UserID != nil && *c.UserID == userID)
+			if c.IsOwner {
+				c.UserPermission = "manage"
+			} else if sharePerm != "" {
+				c.UserPermission = sharePerm
+			} else {
+				c.UserPermission = "read"
+			}
+			list = append(list, c)
+		}
+	}
+
+	if list == nil {
+		list = []domain.OpenSearchConfig{}
+	}
+	return list, nil
 }
 
 func (s *OpenSearchService) GetConfigByID(ctx context.Context, id string) (*domain.OpenSearchConfig, error) {
@@ -112,7 +278,8 @@ func (s *OpenSearchService) GetConfigByID(ctx context.Context, id string) (*doma
 	}
 
 	query := `
-		SELECT id, name, host, port, username, password, use_ssl, verify_ssl, is_active, created_at
+		SELECT id, name, host, port, username, password, use_ssl, verify_ssl, is_active, created_at,
+		       user_id, COALESCE(visibility, 'private')
 		FROM opensearch_configs
 		WHERE id = $1
 		LIMIT 1
@@ -121,6 +288,7 @@ func (s *OpenSearchService) GetConfigByID(ctx context.Context, id string) (*doma
 	err = pool.QueryRow(ctx, query, id).Scan(
 		&cfg.ID, &cfg.Name, &cfg.Host, &cfg.Port, &cfg.Username,
 		&cfg.Password, &cfg.UseSSL, &cfg.VerifySSL, &cfg.IsActive, &cfg.CreatedAt,
+		&cfg.UserID, &cfg.Visibility,
 	)
 	if err != nil {
 		return nil, err
@@ -135,10 +303,27 @@ func (s *OpenSearchService) GetConfigByID(ctx context.Context, id string) (*doma
 	return &cfg, nil
 }
 
-func (s *OpenSearchService) DeleteConfig(ctx context.Context, id string) error {
+func (s *OpenSearchService) DeleteConfig(ctx context.Context, id string, userID int, userRole string) error {
 	pool, err := database.GetPool()
 	if err != nil {
 		return fmt.Errorf("database connection unavailable: %w", err)
+	}
+
+	if !domain.IsAdminRole(userRole) && userID > 0 {
+		// Non-admin can only delete if owner or manage permission
+		var ownerID *int
+		errCheck := pool.QueryRow(ctx, "SELECT user_id FROM opensearch_configs WHERE id = $1", id).Scan(&ownerID)
+		if errCheck != nil {
+			return fmt.Errorf("configuration not found")
+		}
+		if ownerID == nil || *ownerID != userID {
+			// Check manage share
+			var perm string
+			errShare := pool.QueryRow(ctx, "SELECT permission FROM opensearch_shares WHERE config_id = $1 AND user_id = $2", id, userID).Scan(&perm)
+			if errShare != nil || perm != "manage" {
+				return fmt.Errorf("you do not have permission to delete this configuration")
+			}
+		}
 	}
 
 	if id != "" && id != "opensearch-active" {
@@ -149,18 +334,41 @@ func (s *OpenSearchService) DeleteConfig(ctx context.Context, id string) error {
 	return err
 }
 
-func (s *OpenSearchService) SaveConfig(ctx context.Context, cfg domain.OpenSearchConfig) (*domain.OpenSearchConfig, error) {
+func (s *OpenSearchService) SaveConfig(ctx context.Context, cfg domain.OpenSearchConfig, userID int, userRole string) (*domain.OpenSearchConfig, error) {
 	pool, err := database.GetPool()
 	if err != nil {
 		return nil, fmt.Errorf("database connection unavailable: %w", err)
 	}
 
-	if cfg.ID == "" || cfg.ID == "opensearch-active" {
-		if active, err := s.GetActiveConfig(ctx); err == nil && active != nil {
-			cfg.ID = active.ID
+	isAdmin := domain.IsAdminRole(userRole)
+
+	// Check if updating existing
+	if cfg.ID != "" && cfg.ID != "opensearch-active" {
+		var existingOwner *int
+		errExist := pool.QueryRow(ctx, "SELECT user_id FROM opensearch_configs WHERE id = $1", cfg.ID).Scan(&existingOwner)
+		if errExist == nil {
+			// Updating existing config: verify permission
+			if !isAdmin && userID > 0 {
+				if existingOwner == nil || *existingOwner != userID {
+					var perm string
+					errShare := pool.QueryRow(ctx, "SELECT permission FROM opensearch_shares WHERE config_id = $1 AND user_id = $2", cfg.ID, userID).Scan(&perm)
+					if errShare != nil || perm != "manage" {
+						return nil, fmt.Errorf("you do not have permission to edit this configuration")
+					}
+				}
+			}
 		} else {
-			cfg.ID = "osc-primary"
+			// Config with ID does not exist, will create
 		}
+	} else {
+		// New config
+		if cfg.ID == "" || cfg.ID == "opensearch-active" {
+			cfg.ID = fmt.Sprintf("osc-%d", time.Now().UnixNano())
+		}
+	}
+
+	if cfg.Visibility == "" {
+		cfg.Visibility = "private"
 	}
 
 	var encPassword string
@@ -172,9 +380,14 @@ func (s *OpenSearchService) SaveConfig(ctx context.Context, cfg domain.OpenSearc
 		}
 	}
 
+	var assignedUserID *int
+	if userID > 0 {
+		assignedUserID = &userID
+	}
+
 	query := `
-		INSERT INTO opensearch_configs (id, name, host, port, username, password, use_ssl, verify_ssl, is_active, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+		INSERT INTO opensearch_configs (id, name, host, port, username, password, use_ssl, verify_ssl, is_active, user_id, visibility, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			host = EXCLUDED.host,
@@ -183,12 +396,17 @@ func (s *OpenSearchService) SaveConfig(ctx context.Context, cfg domain.OpenSearc
 			password = CASE WHEN $6 != '' THEN $6 ELSE opensearch_configs.password END,
 			use_ssl = EXCLUDED.use_ssl,
 			verify_ssl = EXCLUDED.verify_ssl,
-			is_active = EXCLUDED.is_active
+			is_active = EXCLUDED.is_active,
+			visibility = COALESCE(NULLIF(EXCLUDED.visibility, ''), opensearch_configs.visibility)
 	`
-	_, err = pool.Exec(ctx, query, cfg.ID, cfg.Name, cfg.Host, cfg.Port, cfg.Username, encPassword, cfg.UseSSL, cfg.VerifySSL, cfg.IsActive)
+	_, err = pool.Exec(ctx, query, cfg.ID, cfg.Name, cfg.Host, cfg.Port, cfg.Username, encPassword, cfg.UseSSL, cfg.VerifySSL, cfg.IsActive, assignedUserID, cfg.Visibility)
 	if err != nil {
 		return nil, err
 	}
+
+	cfg.UserID = assignedUserID
+	cfg.IsOwner = true
+	cfg.UserPermission = "manage"
 
 	return &cfg, nil
 }

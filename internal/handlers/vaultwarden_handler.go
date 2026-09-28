@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"go-hephaestus/internal/core/domain"
@@ -26,7 +27,10 @@ func NewVaultwardenHandler(vwService *services.VaultwardenService, vwRepo *repos
 
 // GetConfig returns the active Vaultwarden integration settings (with MasterPassword masked)
 func (h *VaultwardenHandler) GetConfig(c *gin.Context) {
-	cfg, err := h.vwRepo.GetConfigPublic(c.Request.Context())
+	userID, userRole := getUserContext(c)
+	configID := c.Query("id")
+
+	cfg, err := h.vwRepo.GetConfigPublic(c.Request.Context(), userID, userRole, configID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -52,14 +56,36 @@ func (h *VaultwardenHandler) GetConfig(c *gin.Context) {
 	})
 }
 
-// SaveConfig saves or updates the Vaultwarden connection parameters
+// ListConfigs returns all Vaultwarden instances accessible to the user
+func (h *VaultwardenHandler) ListConfigs(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+	configs, err := h.vwRepo.ListConfigs(c.Request.Context(), userID, userRole)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   "Failed to list Vaultwarden configurations",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    configs,
+	})
+}
+
+// SaveConfig saves or updates a user-scoped Vaultwarden connection
 func (h *VaultwardenHandler) SaveConfig(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+
 	var input struct {
 		ID             string `json:"id"`
 		Name           string `json:"name"`
 		ServerURL      string `json:"serverUrl" binding:"required"`
 		Email          string `json:"email" binding:"required"`
 		MasterPassword string `json:"masterPassword"`
+		Visibility     string `json:"visibility"`
 		IsActive       *bool  `json:"isActive"`
 		AutoSync       bool   `json:"autoSync"`
 	}
@@ -81,18 +107,18 @@ func (h *VaultwardenHandler) SaveConfig(c *gin.Context) {
 		ServerURL:      serverURL,
 		Email:          email,
 		MasterPassword: input.MasterPassword,
+		Visibility:     input.Visibility,
 		IsActive:       true,
 	}
 	if input.IsActive != nil {
 		cfg.IsActive = *input.IsActive
 	}
 
-	saved, err := h.vwRepo.SaveConfig(c.Request.Context(), cfg)
+	saved, err := h.vwRepo.SaveConfig(c.Request.Context(), cfg, userID, userRole)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"error":   "Failed to save Vaultwarden configuration",
-			"details": err.Error(),
+			"error":   err.Error(),
 		})
 		return
 	}
@@ -100,7 +126,7 @@ func (h *VaultwardenHandler) SaveConfig(c *gin.Context) {
 	// Trigger initial background sync if autoSync requested
 	if input.AutoSync && input.MasterPassword != "" {
 		go func() {
-			_, _ = h.vwService.SyncVault(context.Background())
+			_, _ = h.vwService.SyncVault(context.Background(), userID, userRole, saved.ID)
 		}()
 	}
 
@@ -113,7 +139,10 @@ func (h *VaultwardenHandler) SaveConfig(c *gin.Context) {
 
 // TestConnection tests connectivity and master password against Vaultwarden
 func (h *VaultwardenHandler) TestConnection(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+
 	var input struct {
+		ConfigID       string `json:"configId"`
 		ServerURL      string `json:"serverUrl" binding:"required"`
 		Email          string `json:"email" binding:"required"`
 		MasterPassword string `json:"masterPassword"`
@@ -127,10 +156,9 @@ func (h *VaultwardenHandler) TestConnection(c *gin.Context) {
 		return
 	}
 
-	// If master password is empty, check if one is already saved in DB
 	pwd := input.MasterPassword
-	if pwd == "" {
-		existing, err := h.vwRepo.GetConfig(c.Request.Context())
+	if pwd == "" && input.ConfigID != "" {
+		existing, err := h.vwRepo.GetConfig(c.Request.Context(), userID, userRole, input.ConfigID)
 		if err == nil && existing != nil {
 			pwd = existing.MasterPassword
 		}
@@ -160,9 +188,12 @@ func (h *VaultwardenHandler) TestConnection(c *gin.Context) {
 	})
 }
 
-// SyncVault triggers an immediate synchronization of all credentials
+// SyncVault triggers an immediate synchronization of credentials
 func (h *VaultwardenHandler) SyncVault(c *gin.Context) {
-	res, err := h.vwService.SyncVault(c.Request.Context())
+	userID, userRole := getUserContext(c)
+	configID := c.Query("id")
+
+	res, err := h.vwService.SyncVault(c.Request.Context(), userID, userRole, configID)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -179,10 +210,12 @@ func (h *VaultwardenHandler) SyncVault(c *gin.Context) {
 
 // GetCiphers returns decrypted credentials with optional keyword and folder query filters
 func (h *VaultwardenHandler) GetCiphers(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+	configID := c.Query("id")
 	keyword := c.Query("keyword")
 	folder := c.Query("folder")
 
-	items, err := h.vwService.GetCiphers(c.Request.Context(), keyword, folder)
+	items, err := h.vwService.GetCiphers(c.Request.Context(), userID, userRole, keyword, folder, configID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -201,16 +234,27 @@ func (h *VaultwardenHandler) GetCiphers(c *gin.Context) {
 
 // DeleteConfig disconnects and deletes the Vaultwarden integration
 func (h *VaultwardenHandler) DeleteConfig(c *gin.Context) {
+	userID, userRole := getUserContext(c)
 	id := c.Query("id")
-	if id == "" {
-		id = "active"
+	if id == "" || id == "active" {
+		cfg, err := h.vwRepo.GetConfig(c.Request.Context(), userID, userRole)
+		if err == nil && cfg != nil {
+			id = cfg.ID
+		}
 	}
 
-	if err := h.vwRepo.DeleteConfig(c.Request.Context(), id); err != nil {
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "No active Vaultwarden configuration to delete",
+		})
+		return
+	}
+
+	if err := h.vwRepo.DeleteConfig(c.Request.Context(), id, userID, userRole); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
-			"error":   "Failed to delete Vaultwarden configuration",
-			"details": err.Error(),
+			"error":   err.Error(),
 		})
 		return
 	}
@@ -223,6 +267,9 @@ func (h *VaultwardenHandler) DeleteConfig(c *gin.Context) {
 
 // CreateCipher handles adding a new credential directly into Vaultwarden
 func (h *VaultwardenHandler) CreateCipher(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+	configID := c.Query("id")
+
 	var input domain.CreateVaultCipherRequest
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -233,7 +280,7 @@ func (h *VaultwardenHandler) CreateCipher(c *gin.Context) {
 		return
 	}
 
-	item, err := h.vwService.CreateCipher(c.Request.Context(), input)
+	item, err := h.vwService.CreateCipher(c.Request.Context(), userID, userRole, input, configID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -252,7 +299,10 @@ func (h *VaultwardenHandler) CreateCipher(c *gin.Context) {
 
 // DeleteCipher handles removing a credential directly from Vaultwarden
 func (h *VaultwardenHandler) DeleteCipher(c *gin.Context) {
+	userID, userRole := getUserContext(c)
 	cipherID := c.Param("id")
+	configID := c.Query("id")
+
 	if cipherID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
@@ -261,7 +311,7 @@ func (h *VaultwardenHandler) DeleteCipher(c *gin.Context) {
 		return
 	}
 
-	if err := h.vwService.DeleteCipher(c.Request.Context(), cipherID); err != nil {
+	if err := h.vwService.DeleteCipher(c.Request.Context(), userID, userRole, cipherID, configID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error":   "Failed to delete credential from Vaultwarden",
@@ -278,7 +328,10 @@ func (h *VaultwardenHandler) DeleteCipher(c *gin.Context) {
 
 // UpdateCipher handles modifying an existing credential in Vaultwarden
 func (h *VaultwardenHandler) UpdateCipher(c *gin.Context) {
+	userID, userRole := getUserContext(c)
 	cipherID := c.Param("id")
+	configID := c.Query("id")
+
 	if cipherID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
@@ -297,7 +350,7 @@ func (h *VaultwardenHandler) UpdateCipher(c *gin.Context) {
 		return
 	}
 
-	item, err := h.vwService.UpdateCipher(c.Request.Context(), cipherID, input)
+	item, err := h.vwService.UpdateCipher(c.Request.Context(), userID, userRole, cipherID, input, configID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -314,3 +367,108 @@ func (h *VaultwardenHandler) UpdateCipher(c *gin.Context) {
 	})
 }
 
+// ==================== SHARING HANDLERS ====================
+
+func (h *VaultwardenHandler) ListShares(c *gin.Context) {
+	configID := c.Query("configId")
+	if configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Query param 'configId' is required"})
+		return
+	}
+
+	userID, userRole := getUserContext(c)
+	hasAccess, isOwner, _, err := h.vwRepo.SharesRepo().CheckAccess(c.Request.Context(), "vaultwarden_configs", "vaultwarden_shares", "config_id", configID, userID, userRole)
+	if err != nil || !hasAccess || (!isOwner && !domain.IsAdminRole(userRole)) {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: only connection owner or administrator can view shares"})
+		return
+	}
+
+	shares, err := h.vwRepo.SharesRepo().ListShares(c.Request.Context(), "vaultwarden_shares", "config_id", configID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": shares})
+}
+
+func (h *VaultwardenHandler) AddShare(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+
+	var req struct {
+		ConfigID   string `json:"configId" binding:"required"`
+		UserID     int    `json:"userId" binding:"required"`
+		Permission string `json:"permission"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input"})
+		return
+	}
+
+	hasAccess, isOwner, _, err := h.vwRepo.SharesRepo().CheckAccess(c.Request.Context(), "vaultwarden_configs", "vaultwarden_shares", "config_id", req.ConfigID, userID, userRole)
+	if err != nil || !hasAccess || (!isOwner && !domain.IsAdminRole(userRole)) {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: only connection owner or administrator can share access"})
+		return
+	}
+
+	if req.UserID == userID {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "You cannot share a connection with yourself"})
+		return
+	}
+
+	if err := h.vwRepo.SharesRepo().AddShare(c.Request.Context(), "vaultwarden_shares", "config_id", req.ConfigID, req.UserID, req.Permission, userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Access granted successfully."})
+}
+
+func (h *VaultwardenHandler) DeleteShare(c *gin.Context) {
+	configID := c.Query("configId")
+	targetUserID, err := strconv.Atoi(c.Param("userId"))
+	if err != nil || configID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid configId or userId"})
+		return
+	}
+
+	userID, userRole := getUserContext(c)
+	hasAccess, isOwner, _, err := h.vwRepo.SharesRepo().CheckAccess(c.Request.Context(), "vaultwarden_configs", "vaultwarden_shares", "config_id", configID, userID, userRole)
+	if err != nil || !hasAccess || (!isOwner && !domain.IsAdminRole(userRole)) {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: only connection owner or administrator can revoke access"})
+		return
+	}
+
+	if err := h.vwRepo.SharesRepo().DeleteShare(c.Request.Context(), "vaultwarden_shares", "config_id", configID, targetUserID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Access revoked successfully."})
+}
+
+func (h *VaultwardenHandler) UpdateVisibility(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+
+	var req struct {
+		ConfigID   string `json:"configId" binding:"required"`
+		Visibility string `json:"visibility" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Invalid input"})
+		return
+	}
+
+	hasAccess, isOwner, _, err := h.vwRepo.SharesRepo().CheckAccess(c.Request.Context(), "vaultwarden_configs", "vaultwarden_shares", "config_id", req.ConfigID, userID, userRole)
+	if err != nil || !hasAccess || (!isOwner && !domain.IsAdminRole(userRole)) {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "error": "Access denied: only connection owner or administrator can modify visibility"})
+		return
+	}
+
+	if err := h.vwRepo.SharesRepo().UpdateVisibility(c.Request.Context(), "vaultwarden_configs", req.ConfigID, req.Visibility); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Visibility updated successfully."})
+}

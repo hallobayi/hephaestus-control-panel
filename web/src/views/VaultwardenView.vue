@@ -26,7 +26,9 @@ import {
   AlertCircle,
   Plus,
   RotateCcw,
-  Pencil
+  Pencil,
+  Users,
+  Share2
 } from 'lucide-vue-next';
 
 interface VaultCredentialItem {
@@ -54,11 +56,128 @@ interface VaultwardenConfig {
   cachedCiphers?: VaultCredentialItem[];
   createdAt: string;
   updatedAt: string;
+  userId?: number;
+  ownerUsername?: string;
+  visibility?: 'private' | 'shared';
+  isOwner?: boolean;
+  userPermission?: string;
+  sharesCount?: number;
+}
+
+interface VaultwardenShare {
+  id: string;
+  configId: string;
+  userId: number;
+  username: string;
+  role: string;
+  permission: string;
+  sharedBy?: number;
+  sharedByUsername?: string;
+  createdAt: string;
 }
 
 // State
 const authStore = useAuthStore();
 const canManage = computed(() => authStore.can('security', 'manage'));
+const isOwnerOrManager = computed(() => {
+  if (authStore.user?.role === 'ADMIN') return true;
+  if (!config.value) return true;
+  return config.value.isOwner || config.value.userPermission === 'manage';
+});
+
+// Share Modal State
+const isShareModalOpen = ref(false);
+const isShareLoading = ref(false);
+const isShareSubmitting = ref(false);
+const vaultShares = ref<VaultwardenShare[]>([]);
+const availableUsers = ref<Array<{ id: number; username: string; role: string }>>([]);
+const shareForm = ref<{ userId: number | ''; permission: 'read' | 'manage' }>({
+  userId: '',
+  permission: 'read',
+});
+
+const openShareModal = async () => {
+  isShareModalOpen.value = true;
+  shareForm.value = { userId: '', permission: 'read' };
+  await Promise.all([fetchVaultShares(), fetchUsers()]);
+};
+
+const fetchVaultShares = async () => {
+  isShareLoading.value = true;
+  try {
+    const res = await axios.get('/api/v1/vaultwarden/shares');
+    if (res.data?.success) {
+      vaultShares.value = res.data.data || [];
+    }
+  } catch (err: any) {
+    console.error('Failed to load vault shares:', err);
+    vaultShares.value = [];
+  } finally {
+    isShareLoading.value = false;
+  }
+};
+
+const fetchUsers = async () => {
+  try {
+    const res = await axios.get('/api/v1/docker/users');
+    if (res.data?.success) {
+      availableUsers.value = res.data.data || [];
+    }
+  } catch (err: any) {
+    try {
+      const res2 = await axios.get('/api/v1/remote-host/users');
+      if (res2.data?.success) {
+        availableUsers.value = res2.data.data || [];
+      }
+    } catch (_) {
+      availableUsers.value = [];
+    }
+  }
+};
+
+const handleGrantVaultShare = async () => {
+  if (!shareForm.value.userId) return;
+  isShareSubmitting.value = true;
+  try {
+    const res = await axios.post('/api/v1/vaultwarden/shares', {
+      userId: Number(shareForm.value.userId),
+      permission: shareForm.value.permission,
+    });
+    if (res.data?.success) {
+      triggerToast('Access granted successfully');
+      shareForm.value.userId = '';
+      await fetchVaultShares();
+      if (config.value) {
+        config.value.sharesCount = vaultShares.value.length;
+        config.value.visibility = vaultShares.value.length > 0 ? 'shared' : 'private';
+      }
+    } else {
+      triggerToast(res.data?.error || 'Failed to grant access', 'error');
+    }
+  } catch (err: any) {
+    triggerToast(err.response?.data?.error || 'Failed to grant access', 'error');
+  } finally {
+    isShareSubmitting.value = false;
+  }
+};
+
+const handleRevokeVaultShare = async (shareId: string) => {
+  try {
+    const res = await axios.delete(`/api/v1/vaultwarden/shares/${shareId}`);
+    if (res.data?.success) {
+      triggerToast('Access revoked successfully');
+      vaultShares.value = vaultShares.value.filter(s => s.id !== shareId);
+      if (config.value) {
+        config.value.sharesCount = vaultShares.value.length;
+        config.value.visibility = vaultShares.value.length > 0 ? 'shared' : 'private';
+      }
+    } else {
+      triggerToast(res.data?.error || 'Failed to revoke access', 'error');
+    }
+  } catch (err: any) {
+    triggerToast(err.response?.data?.error || 'Failed to revoke access', 'error');
+  }
+};
 
 const loading = ref(true);
 const syncing = ref(false);
@@ -560,11 +679,31 @@ onUnmounted(() => {
       </div>
 
       <div class="flex items-center gap-2">
-        <!-- Connected status -->
+        <!-- Connected status & Ownership / Sharing status -->
         <div v-if="isConfigured" class="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-50 dark:bg-[#111624] border border-slate-200 dark:border-[#1b2234] text-[11px] text-slate-500 dark:text-slate-400">
           <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
           <span>Connected</span>
+          <span v-if="config?.isOwner" class="ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-100 dark:bg-[#141b2d] border border-slate-200 dark:border-[#1f2842] text-slate-600 dark:text-slate-400">
+            {{ (config.visibility === 'shared' || (config.sharesCount && config.sharesCount > 0)) ? `Shared (${config.sharesCount || 0})` : 'Private' }}
+          </span>
+          <span v-else-if="config?.ownerUsername" class="ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/10 border border-purple-500/30 text-purple-600 dark:text-purple-400">
+            Shared by @{{ config.ownerUsername }}
+          </span>
         </div>
+
+        <!-- Share Access Button -->
+        <button
+          v-if="isConfigured && isOwnerOrManager"
+          @click="openShareModal"
+          class="flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-[#121826] border border-slate-200 dark:border-[#1b2234] hover:bg-slate-50 dark:hover:bg-[#1a2336] text-slate-700 dark:text-slate-300 rounded-lg text-xs font-medium transition cursor-pointer"
+          title="Share Vault Access with other users"
+        >
+          <Users class="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+          <span>Share Access</span>
+          <span v-if="config?.sharesCount" class="px-1.5 py-0.2 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[10px] font-mono">
+            {{ config.sharesCount }}
+          </span>
+        </button>
 
         <!-- Auto-sync selector -->
         <div v-if="isConfigured" class="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-50 dark:bg-[#111624] border border-slate-200 dark:border-[#1b2234] text-[11px] text-slate-600 dark:text-slate-400">
@@ -592,7 +731,7 @@ onUnmounted(() => {
         </button>
 
         <button
-          v-if="canManage"
+          v-if="!isConfigured || isOwnerOrManager"
           @click="showConfigModal = true"
           class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition cursor-pointer shadow-xs"
         >
@@ -637,12 +776,15 @@ onUnmounted(() => {
           </p>
         </div>
 
-        <div v-if="isConfigured" class="flex items-center gap-3 shrink-0">
+        <div v-if="isConfigured" class="flex items-center gap-3 shrink-0 flex-wrap sm:flex-nowrap">
+          <span class="text-xs text-slate-500 dark:text-slate-400">
+            Owner: <strong class="text-slate-800 dark:text-slate-200">@{{ config?.ownerUsername || 'You' }}</strong>
+          </span>
           <span class="text-xs text-slate-500 dark:text-slate-400">
             Last sync: <strong class="text-slate-800 dark:text-slate-200">{{ formatRelativeTime(config?.lastSyncedAt) }}</strong>
           </span>
           <button
-            v-if="canManage"
+            v-if="isOwnerOrManager"
             @click="openCreateCipher"
             class="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
           >
@@ -671,7 +813,6 @@ onUnmounted(() => {
         </div>
         <div class="pt-2">
           <button
-            v-if="canManage"
             @click="showConfigModal = true"
             class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-sm inline-flex items-center gap-2"
           >
@@ -887,7 +1028,7 @@ onUnmounted(() => {
                   Details
                 </button>
                 <button
-                  v-if="canManage"
+                  v-if="isOwnerOrManager"
                   @click="openEditCipher(item)"
                   class="text-slate-400 hover:text-blue-600 dark:hover:text-[#95CCDD] transition cursor-pointer p-0.5"
                   title="Edit Credential"
@@ -895,7 +1036,7 @@ onUnmounted(() => {
                   <Pencil class="w-3.5 h-3.5" />
                 </button>
                 <button
-                  v-if="canManage"
+                  v-if="isOwnerOrManager"
                   @click="confirmDeleteCipher(item)"
                   class="text-slate-400 hover:text-rose-500 transition cursor-pointer p-0.5"
                   title="Delete Credential"
@@ -1088,7 +1229,7 @@ onUnmounted(() => {
 
         <div class="pt-2 flex items-center justify-between border-t border-slate-100 dark:border-[#1b2234]">
           <button
-            v-if="canManage"
+            v-if="isOwnerOrManager"
             @click="showDetailModal = false; confirmDeleteCipher(selectedItem)"
             class="px-3 py-1.5 text-xs text-rose-600 hover:text-rose-700 font-semibold flex items-center gap-1.5 cursor-pointer"
           >
@@ -1098,7 +1239,7 @@ onUnmounted(() => {
           <div v-else></div>
           <div class="flex items-center gap-2">
             <button
-              v-if="canManage"
+              v-if="isOwnerOrManager"
               @click="openEditCipher(selectedItem)"
               class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5"
             >
@@ -1322,6 +1463,158 @@ onUnmounted(() => {
             class="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold transition cursor-pointer disabled:opacity-50"
           >
             {{ deleting ? 'Deleting...' : 'Confirm Delete' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Standard Share Access Modal (Conforming strictly to AGENTS.md) -->
+    <div
+      v-if="isShareModalOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 dark:bg-black/80 backdrop-blur-sm animate-in fade-in"
+    >
+      <div class="bg-white dark:bg-[#111624] border border-slate-200 dark:border-[#1f283d] rounded-2xl w-full max-w-lg shadow-2xl p-6 space-y-4">
+        <!-- Modal Header -->
+        <div class="flex items-center justify-between border-b border-slate-200 dark:border-[#1b2234] pb-3">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center">
+              <Users class="w-4 h-4" />
+            </div>
+            <div>
+              <h3 class="text-sm font-bold text-slate-900 dark:text-white">Share Vault Access</h3>
+              <p class="text-[11px] text-slate-500 dark:text-slate-400">
+                Grant or revoke other team members access to this vault connection.
+              </p>
+            </div>
+          </div>
+          <button
+            @click="isShareModalOpen = false"
+            class="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-white transition cursor-pointer"
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <div class="space-y-4">
+          <!-- Vault Owner Banner -->
+          <div class="p-3 rounded-xl bg-slate-50 dark:bg-[#0c101a] border border-slate-200 dark:border-[#1b2234] flex items-center justify-between text-xs">
+            <span class="text-slate-500 dark:text-slate-400 font-medium">Vault Owner</span>
+            <span class="text-slate-800 dark:text-slate-200 font-semibold font-mono bg-white dark:bg-[#141b2d] px-2.5 py-1 rounded-lg border border-slate-200 dark:border-[#1f2842]">
+              @{{ config?.ownerUsername || 'You' }}
+            </span>
+          </div>
+
+          <!-- Grant Access Form -->
+          <div class="p-4 bg-slate-50 dark:bg-[#0c101a] border border-slate-200 dark:border-[#1b2234] rounded-xl space-y-3">
+            <h4 class="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-2">
+              <Users class="w-3.5 h-3.5 text-slate-400" />
+              <span>Grant Access to User</span>
+            </h4>
+
+            <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
+              <div class="sm:col-span-6 space-y-1">
+                <label class="block text-[11px] text-slate-500 dark:text-slate-400 font-medium">Select User</label>
+                <select
+                  v-model="shareForm.userId"
+                  class="w-full bg-white dark:bg-[#141b2d] border border-slate-200 dark:border-[#1f2842] rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 transition"
+                >
+                  <option value="" disabled>Choose user...</option>
+                  <option
+                    v-for="u in availableUsers.filter(u => u.id !== authStore.user?.id && (!config?.userId || u.id !== config.userId))"
+                    :key="u.id"
+                    :value="u.id"
+                  >
+                    {{ u.username }} ({{ u.role }})
+                  </option>
+                </select>
+              </div>
+
+              <div class="sm:col-span-4 space-y-1">
+                <label class="block text-[11px] text-slate-500 dark:text-slate-400 font-medium">Access Level</label>
+                <select
+                  v-model="shareForm.permission"
+                  class="w-full bg-white dark:bg-[#141b2d] border border-slate-200 dark:border-[#1f2842] rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 transition"
+                >
+                  <option value="read">Read Only</option>
+                  <option value="manage">Full Control</option>
+                </select>
+              </div>
+
+              <div class="sm:col-span-2 flex items-end">
+                <button
+                  type="button"
+                  @click="handleGrantVaultShare"
+                  :disabled="!shareForm.userId || isShareSubmitting"
+                  class="w-full py-2 px-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition shadow-xs flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw v-if="isShareSubmitting" class="w-3.5 h-3.5 animate-spin" />
+                  <span>{{ isShareSubmitting ? '...' : 'Grant' }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Active Shares List -->
+          <div class="space-y-2">
+            <h4 class="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+              Currently Shared Users ({{ vaultShares.length }})
+            </h4>
+
+            <div v-if="isShareLoading" class="p-6 text-center text-xs text-slate-500">
+              Loading access list...
+            </div>
+            <div v-else-if="vaultShares.length === 0" class="p-6 text-center text-xs text-slate-500 bg-slate-50 dark:bg-[#0c101a] rounded-xl border border-slate-200 dark:border-[#1b2234]">
+              This vault connection is private. Only you can view and decrypt credentials stored in it.
+            </div>
+            <div v-else class="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              <div
+                v-for="s in vaultShares"
+                :key="s.id"
+                class="p-3 bg-slate-50 dark:bg-[#0c101a] border border-slate-200 dark:border-[#1b2234] rounded-xl flex items-center justify-between gap-3 text-xs"
+              >
+                <div class="flex items-center gap-2.5">
+                  <div class="w-7 h-7 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-white font-bold text-xs flex items-center justify-center shrink-0">
+                    {{ s.username.substring(0, 2).toUpperCase() }}
+                  </div>
+                  <div>
+                    <p class="font-semibold text-slate-900 dark:text-white">@{{ s.username }}</p>
+                    <p class="text-[10px] text-slate-500 font-mono">
+                      Granted by @{{ s.sharedByUsername || 'Admin' }}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="flex items-center gap-2">
+                  <span
+                    :class="[
+                      'px-2 py-0.5 rounded text-[10px] font-bold uppercase',
+                      s.permission === 'manage' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30' : 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/30'
+                    ]"
+                  >
+                    {{ s.permission === 'manage' ? 'Full Control' : 'Read Only' }}
+                  </span>
+
+                  <button
+                    type="button"
+                    @click="handleRevokeVaultShare(s.id)"
+                    class="p-1 rounded text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 transition cursor-pointer"
+                    title="Revoke Access"
+                  >
+                    <Trash2 class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-2 flex justify-end border-t border-slate-200 dark:border-[#1b2234]">
+          <button
+            type="button"
+            @click="isShareModalOpen = false"
+            class="px-4 py-1.5 bg-slate-100 dark:bg-[#1b2339] hover:bg-slate-200 dark:hover:bg-[#252f4c] text-slate-700 dark:text-slate-300 rounded-lg text-xs font-semibold cursor-pointer"
+          >
+            Close
           </button>
         </div>
       </div>

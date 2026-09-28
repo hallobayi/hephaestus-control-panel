@@ -19,21 +19,59 @@ func NewOTelRepository() *OTelRepository {
 }
 
 // List returns all OpenTelemetry configurations, with passwords/keys masked for security
-func (r *OTelRepository) List(ctx context.Context) ([]domain.OpenTelemetryConfig, error) {
+func (r *OTelRepository) List(ctx context.Context, userOpt ...interface{}) ([]domain.OpenTelemetryConfig, error) {
 	pool, err := database.GetPool()
 	if err != nil {
 		return nil, err
 	}
 
-	query := `
-		SELECT 
-			id, name, tags, ssh_host, ssh_port, ssh_user, ssh_auth,
-			config_path, service_name, reload_mode, last_status, is_active,
-			created_at, updated_at
-		FROM opentelemetry_configs
-		ORDER BY name ASC
-	`
-	rows, err := pool.Query(ctx, query)
+	var userID int
+	var userRole string
+	if len(userOpt) >= 2 {
+		if id, ok := userOpt[0].(int); ok {
+			userID = id
+		}
+		if role, ok := userOpt[1].(string); ok {
+			userRole = role
+		}
+	}
+
+	isAdmin := domain.IsAdminRole(userRole) || (userID == 0 && userRole == "ADMIN") || len(userOpt) == 0
+
+	var rows pgx.Rows
+	if isAdmin {
+		query := `
+			SELECT 
+				c.id, c.name, c.tags, c.ssh_host, c.ssh_port, c.ssh_user, c.ssh_auth,
+				c.config_path, c.service_name, c.reload_mode, c.last_status, c.is_active,
+				c.created_at, c.updated_at,
+				c.user_id, COALESCE(u.username, 'Admin') AS owner_username, COALESCE(c.visibility, 'private') AS visibility,
+				(SELECT COUNT(*) FROM opentelemetry_shares WHERE config_id = c.id) AS shares_count
+			FROM opentelemetry_configs c
+			LEFT JOIN users u ON c.user_id = u.id
+			ORDER BY c.name ASC
+		`
+		rows, err = pool.Query(ctx, query)
+	} else {
+		query := `
+			SELECT 
+				c.id, c.name, c.tags, c.ssh_host, c.ssh_port, c.ssh_user, c.ssh_auth,
+				c.config_path, c.service_name, c.reload_mode, c.last_status, c.is_active,
+				c.created_at, c.updated_at,
+				c.user_id, COALESCE(u.username, 'Admin') AS owner_username, COALESCE(c.visibility, 'private') AS visibility,
+				(SELECT COUNT(*) FROM opentelemetry_shares WHERE config_id = c.id) AS shares_count,
+				COALESCE(ots.permission, '') AS share_perm
+			FROM opentelemetry_configs c
+			LEFT JOIN users u ON c.user_id = u.id
+			LEFT JOIN opentelemetry_shares ots ON c.id = ots.config_id AND ots.user_id = $1
+			WHERE c.visibility = 'public'
+			   OR c.user_id = $1
+			   OR ots.user_id = $1
+			ORDER BY c.name ASC
+		`
+		rows, err = pool.Query(ctx, query, userID)
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -42,17 +80,45 @@ func (r *OTelRepository) List(ctx context.Context) ([]domain.OpenTelemetryConfig
 	var list []domain.OpenTelemetryConfig
 	for rows.Next() {
 		var c domain.OpenTelemetryConfig
-		if err := rows.Scan(
-			&c.ID, &c.Name, &c.Tags, &c.SSHHost, &c.SSHPort, &c.SSHUser, &c.SSHAuth,
-			&c.ConfigPath, &c.ServiceName, &c.ReloadMode, &c.LastStatus, &c.IsActive,
-			&c.CreatedAt, &c.UpdatedAt,
-		); err != nil {
-			return nil, err
+		var sharePerm string
+		if isAdmin {
+			if err := rows.Scan(
+				&c.ID, &c.Name, &c.Tags, &c.SSHHost, &c.SSHPort, &c.SSHUser, &c.SSHAuth,
+				&c.ConfigPath, &c.ServiceName, &c.ReloadMode, &c.LastStatus, &c.IsActive,
+				&c.CreatedAt, &c.UpdatedAt,
+				&c.UserID, &c.OwnerUsername, &c.Visibility, &c.SharesCount,
+			); err != nil {
+				return nil, err
+			}
+			c.IsOwner = true
+			c.UserPermission = "manage"
+		} else {
+			if err := rows.Scan(
+				&c.ID, &c.Name, &c.Tags, &c.SSHHost, &c.SSHPort, &c.SSHUser, &c.SSHAuth,
+				&c.ConfigPath, &c.ServiceName, &c.ReloadMode, &c.LastStatus, &c.IsActive,
+				&c.CreatedAt, &c.UpdatedAt,
+				&c.UserID, &c.OwnerUsername, &c.Visibility, &c.SharesCount, &sharePerm,
+			); err != nil {
+				return nil, err
+			}
+			c.IsOwner = (c.UserID != nil && *c.UserID == userID)
+			if c.IsOwner {
+				c.UserPermission = "manage"
+			} else if sharePerm != "" {
+				c.UserPermission = sharePerm
+			} else {
+				c.UserPermission = "read"
+			}
 		}
+
 		if c.Tags == nil {
 			c.Tags = []string{}
 		}
 		list = append(list, c)
+	}
+
+	if list == nil {
+		list = []domain.OpenTelemetryConfig{}
 	}
 	return list, nil
 }
@@ -100,10 +166,37 @@ func (r *OTelRepository) GetByID(ctx context.Context, id string) (*domain.OpenTe
 }
 
 // Save creates or updates an OpenTelemetry configuration
-func (r *OTelRepository) Save(ctx context.Context, cfg domain.OpenTelemetryConfig) error {
+func (r *OTelRepository) Save(ctx context.Context, cfg domain.OpenTelemetryConfig, userOpt ...interface{}) error {
 	pool, err := database.GetPool()
 	if err != nil {
 		return err
+	}
+
+	var userID int
+	var userRole string
+	if len(userOpt) >= 2 {
+		if id, ok := userOpt[0].(int); ok {
+			userID = id
+		}
+		if role, ok := userOpt[1].(string); ok {
+			userRole = role
+		}
+	}
+
+	isAdmin := domain.IsAdminRole(userRole) || (userID == 0 && userRole == "ADMIN") || len(userOpt) == 0
+
+	if cfg.ID != "" {
+		var existingOwner *int
+		errExist := pool.QueryRow(ctx, "SELECT user_id FROM opentelemetry_configs WHERE id = $1", cfg.ID).Scan(&existingOwner)
+		if errExist == nil && !isAdmin && userID > 0 {
+			if existingOwner == nil || *existingOwner != userID {
+				var perm string
+				errShare := pool.QueryRow(ctx, "SELECT permission FROM opentelemetry_shares WHERE config_id = $1 AND user_id = $2", cfg.ID, userID).Scan(&perm)
+				if errShare != nil || perm != "manage" {
+					return errors.New("you do not have permission to edit this OpenTelemetry configuration")
+				}
+			}
+		}
 	}
 
 	if strings.TrimSpace(cfg.ID) == "" {
@@ -140,12 +233,22 @@ func (r *OTelRepository) Save(ctx context.Context, cfg domain.OpenTelemetryConfi
 		}
 	}
 
+	var assignedUserID *int
+	if userID > 0 {
+		assignedUserID = &userID
+	} else if cfg.UserID != nil {
+		assignedUserID = cfg.UserID
+	}
+	if cfg.Visibility == "" {
+		cfg.Visibility = "private"
+	}
+
 	query := `
 		INSERT INTO opentelemetry_configs (
 			id, name, tags, ssh_host, ssh_port, ssh_user, ssh_auth,
 			ssh_password, ssh_key, config_path, service_name, reload_mode,
-			last_status, is_active, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+			last_status, is_active, user_id, visibility, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			tags = EXCLUDED.tags,
@@ -159,13 +262,14 @@ func (r *OTelRepository) Save(ctx context.Context, cfg domain.OpenTelemetryConfi
 			service_name = EXCLUDED.service_name,
 			reload_mode = EXCLUDED.reload_mode,
 			is_active = EXCLUDED.is_active,
+			visibility = COALESCE(NULLIF(EXCLUDED.visibility, ''), opentelemetry_configs.visibility),
 			updated_at = NOW()
 	`
 
 	_, err = pool.Exec(ctx, query,
 		cfg.ID, cfg.Name, cfg.Tags, cfg.SSHHost, cfg.SSHPort, cfg.SSHUser, cfg.SSHAuth,
 		encPassword, encKey, cfg.ConfigPath, cfg.ServiceName, cfg.ReloadMode,
-		cfg.LastStatus, cfg.IsActive,
+		cfg.LastStatus, cfg.IsActive, assignedUserID, cfg.Visibility,
 	)
 	return err
 }
@@ -181,11 +285,38 @@ func (r *OTelRepository) UpdateStatus(ctx context.Context, id string, status str
 }
 
 // Delete removes an OpenTelemetry configuration
-func (r *OTelRepository) Delete(ctx context.Context, id string) error {
+func (r *OTelRepository) Delete(ctx context.Context, id string, userOpt ...interface{}) error {
 	pool, err := database.GetPool()
 	if err != nil {
 		return err
 	}
+
+	var userID int
+	var userRole string
+	if len(userOpt) >= 2 {
+		if uid, ok := userOpt[0].(int); ok {
+			userID = uid
+		}
+		if role, ok := userOpt[1].(string); ok {
+			userRole = role
+		}
+	}
+
+	if !domain.IsAdminRole(userRole) && userID > 0 {
+		var ownerID *int
+		errCheck := pool.QueryRow(ctx, "SELECT user_id FROM opentelemetry_configs WHERE id = $1", id).Scan(&ownerID)
+		if errCheck != nil {
+			return errors.New("host configuration not found")
+		}
+		if ownerID == nil || *ownerID != userID {
+			var perm string
+			errShare := pool.QueryRow(ctx, "SELECT permission FROM opentelemetry_shares WHERE config_id = $1 AND user_id = $2", id, userID).Scan(&perm)
+			if errShare != nil || perm != "manage" {
+				return errors.New("you do not have permission to delete this OpenTelemetry configuration")
+			}
+		}
+	}
+
 	res, err := pool.Exec(ctx, `DELETE FROM opentelemetry_configs WHERE id = $1`, id)
 	if err != nil {
 		return err

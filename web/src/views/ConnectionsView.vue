@@ -18,7 +18,9 @@ import {
   RotateCcw,
   AlertTriangle,
   Eye,
-  EyeOff
+  EyeOff,
+  Users,
+  Share2
 } from 'lucide-vue-next';
 
 const router = useRouter();
@@ -35,6 +37,23 @@ interface RegistryItem {
   status: 'connected' | 'offline' | 'checking';
   rawType: string;
   rawItem: any;
+  ownerUsername?: string;
+  isOwner?: boolean;
+  visibility?: 'private' | 'shared';
+  userPermission?: string;
+  sharesCount?: number;
+}
+
+interface ConnectionShare {
+  id: string;
+  connectionId: string;
+  userId: number;
+  username: string;
+  role: string;
+  permission: string;
+  sharedBy?: number;
+  sharedByUsername?: string;
+  createdAt: string;
 }
 
 const registry = ref<RegistryItem[]>([]);
@@ -45,6 +64,123 @@ const testing = ref(false);
 // Edit Mode State
 const editingId = ref<string | null>(null);
 const editingRawType = ref<string | null>(null);
+
+// Share Modal State
+const isShareModalOpen = ref(false);
+const isShareLoading = ref(false);
+const isShareSubmitting = ref(false);
+const selectedItemForShare = ref<RegistryItem | null>(null);
+const connectionShares = ref<ConnectionShare[]>([]);
+const availableUsers = ref<Array<{ id: number; username: string; role: string }>>([]);
+const shareForm = ref<{ userId: number | ''; permission: 'read' | 'manage' }>({
+  userId: '',
+  permission: 'read',
+});
+
+const canManageItem = (item: RegistryItem): boolean => {
+  if (authStore.user?.role === 'ADMIN') return true;
+  return Boolean(item.isOwner || item.userPermission === 'manage');
+};
+
+const getShareApiPath = (item: RegistryItem, shareId?: string): string => {
+  let base = '';
+  if (item.rawType === 'grafana') {
+    base = `/api/v1/settings/grafana/${item.id}/shares`;
+  } else if (item.rawType === 'prometheus') {
+    base = `/api/v1/settings/prometheus/${item.id}/shares`;
+  } else if (item.rawType === 'opensearch') {
+    base = `/api/v1/opensearch/configs/${item.id}/shares`;
+  } else if (item.rawType === 'docker') {
+    base = `/api/v1/docker/connections/${item.id}/shares`;
+  }
+  return shareId ? `${base}/${shareId}` : base;
+};
+
+const openShareModal = async (item: RegistryItem, event?: MouseEvent) => {
+  if (event) event.stopPropagation();
+  selectedItemForShare.value = item;
+  isShareModalOpen.value = true;
+  shareForm.value = { userId: '', permission: 'read' };
+  await Promise.all([fetchConnectionShares(item), fetchAvailableUsers()]);
+};
+
+const fetchConnectionShares = async (item: RegistryItem) => {
+  isShareLoading.value = true;
+  try {
+    const url = getShareApiPath(item);
+    if (!url) return;
+    const res = await axios.get(url);
+    if (res.data?.success) {
+      connectionShares.value = res.data.data || [];
+    }
+  } catch (err: any) {
+    console.error('Failed to load connection shares:', err);
+    connectionShares.value = [];
+  } finally {
+    isShareLoading.value = false;
+  }
+};
+
+const fetchAvailableUsers = async () => {
+  try {
+    const res = await axios.get('/api/v1/docker/users');
+    if (res.data?.success) {
+      availableUsers.value = res.data.data || [];
+    }
+  } catch (err: any) {
+    try {
+      const res2 = await axios.get('/api/v1/remote-host/users');
+      if (res2.data?.success) {
+        availableUsers.value = res2.data.data || [];
+      }
+    } catch (_) {
+      availableUsers.value = [];
+    }
+  }
+};
+
+const handleGrantConnectionShare = async () => {
+  if (!shareForm.value.userId || !selectedItemForShare.value) return;
+  isShareSubmitting.value = true;
+  try {
+    const url = getShareApiPath(selectedItemForShare.value);
+    const res = await axios.post(url, {
+      userId: Number(shareForm.value.userId),
+      permission: shareForm.value.permission,
+    });
+    if (res.data?.success) {
+      showToast('Access granted successfully', 'success');
+      shareForm.value.userId = '';
+      await fetchConnectionShares(selectedItemForShare.value);
+      selectedItemForShare.value.sharesCount = connectionShares.value.length;
+      selectedItemForShare.value.visibility = connectionShares.value.length > 0 ? 'shared' : 'private';
+    } else {
+      showToast(res.data?.error || 'Failed to grant access', 'error');
+    }
+  } catch (err: any) {
+    showToast(err.response?.data?.error || 'Failed to grant access', 'error');
+  } finally {
+    isShareSubmitting.value = false;
+  }
+};
+
+const handleRevokeConnectionShare = async (shareId: string) => {
+  if (!selectedItemForShare.value) return;
+  try {
+    const url = getShareApiPath(selectedItemForShare.value, shareId);
+    const res = await axios.delete(url);
+    if (res.data?.success) {
+      showToast('Access revoked successfully', 'success');
+      connectionShares.value = connectionShares.value.filter(s => s.id !== shareId);
+      selectedItemForShare.value.sharesCount = connectionShares.value.length;
+      selectedItemForShare.value.visibility = connectionShares.value.length > 0 ? 'shared' : 'private';
+    } else {
+      showToast(res.data?.error || 'Failed to revoke access', 'error');
+    }
+  } catch (err: any) {
+    showToast(err.response?.data?.error || 'Failed to revoke access', 'error');
+  }
+};
 
 // Hide/Show Sensitive Details (URL, IP Address, Username)
 const HIDE_SENSITIVE_KEY = 'hcp_connections_hide_sensitive';
@@ -193,7 +329,7 @@ const fetchConnections = async () => {
     const [grafanaRes, promRes, osRes, dockerRes] = await Promise.all([
       axios.get('/api/v1/settings/grafana').catch(() => ({ data: { success: false } })),
       axios.get('/api/v1/settings/prometheus').catch(() => ({ data: { success: false } })),
-      axios.get('/api/v1/opensearch/config').catch(() => ({ data: { success: false } })),
+      axios.get('/api/v1/opensearch/configs').catch(() => axios.get('/api/v1/opensearch/config')).catch(() => ({ data: { success: false } })),
       axios.get('/api/v1/docker/connections').catch(() => ({ data: { success: false } })),
     ]);
 
@@ -209,6 +345,11 @@ const fetchConnections = async () => {
           status: 'connected',
           rawType: 'grafana',
           rawItem: g,
+          ownerUsername: g.ownerUsername || 'administrator',
+          isOwner: g.isOwner !== undefined ? g.isOwner : (authStore.user?.role === 'ADMIN'),
+          visibility: g.visibility || 'private',
+          userPermission: g.userPermission || (authStore.user?.role === 'ADMIN' ? 'manage' : 'read'),
+          sharesCount: g.sharesCount || 0,
         });
       });
     }
@@ -230,13 +371,18 @@ const fetchConnections = async () => {
           status: 'connected',
           rawType: 'prometheus',
           rawItem: p,
+          ownerUsername: p.ownerUsername || 'administrator',
+          isOwner: p.isOwner !== undefined ? p.isOwner : (authStore.user?.role === 'ADMIN'),
+          visibility: p.visibility || 'private',
+          userPermission: p.userPermission || (authStore.user?.role === 'ADMIN' ? 'manage' : 'read'),
+          sharesCount: p.sharesCount || 0,
         });
       });
     }
 
-    // 3. OpenSearch Config
-    if (osRes.data?.success && osRes.data.data && osRes.data.data.host) {
-      const os = osRes.data.data;
+    // 3. OpenSearch Configs (Single or List)
+    const osList = Array.isArray(osRes.data?.data) ? osRes.data.data : (osRes.data?.data?.host ? [osRes.data.data] : []);
+    osList.forEach((os: any) => {
       items.push({
         id: os.id || 'opensearch-active',
         name: os.name || 'OpenSearch Primary',
@@ -246,8 +392,13 @@ const fetchConnections = async () => {
         status: 'connected',
         rawType: 'opensearch',
         rawItem: os,
+        ownerUsername: os.ownerUsername || 'administrator',
+        isOwner: os.isOwner !== undefined ? os.isOwner : (authStore.user?.role === 'ADMIN'),
+        visibility: os.visibility || 'private',
+        userPermission: os.userPermission || (authStore.user?.role === 'ADMIN' ? 'manage' : 'read'),
+        sharesCount: os.sharesCount || 0,
       });
-    }
+    });
 
     // 4. Docker Engine Connections
     if (dockerRes.data?.success && Array.isArray(dockerRes.data.data)) {
@@ -271,6 +422,11 @@ const fetchConnections = async () => {
           status: 'connected',
           rawType: 'docker',
           rawItem: d,
+          ownerUsername: d.ownerUsername || 'administrator',
+          isOwner: d.isOwner !== undefined ? d.isOwner : (authStore.user?.role === 'ADMIN'),
+          visibility: d.visibility || 'private',
+          userPermission: d.userPermission || (authStore.user?.role === 'ADMIN' ? 'manage' : 'read'),
+          sharesCount: d.sharesCount || 0,
         });
       });
     }
@@ -1499,18 +1655,18 @@ onMounted(() => {
           </template>
 
           <!-- Buttons: Test Connection & Register/Update -->
-          <div :class="canManage ? 'grid grid-cols-2 gap-3 pt-2' : 'pt-2'">
+          <div class="grid grid-cols-2 gap-3 pt-2">
             <button
               type="button"
               @click="handleTestConnection"
               :disabled="testing"
-              :class="canManage ? 'px-4 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-[#20242e] dark:hover:bg-[#282d3a] text-slate-700 hover:text-slate-900 dark:text-slate-200 text-xs font-bold rounded-lg border border-slate-300 dark:border-slate-700 transition disabled:opacity-50 cursor-pointer' : 'w-full px-4 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-[#20242e] dark:hover:bg-[#282d3a] text-slate-700 hover:text-slate-900 dark:text-slate-200 text-xs font-bold rounded-lg border border-slate-300 dark:border-slate-700 transition disabled:opacity-50 cursor-pointer'"
+              class="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-[#20242e] dark:hover:bg-[#282d3a] text-slate-700 hover:text-slate-900 dark:text-slate-200 text-xs font-bold rounded-lg border border-slate-300 dark:border-slate-700 transition disabled:opacity-50 cursor-pointer"
             >
               {{ testing ? 'TESTING...' : 'TEST CONNECTION' }}
             </button>
 
             <button
-              v-if="canManage"
+              v-if="!editingId || canManageItem(registry.find(r => r.id === editingId) || { isOwner: true, rawType: '', id: '', name: '', type: 'GRAFANA API', url: '', isActive: true, status: 'connected', rawItem: null })"
               type="submit"
               class="px-4 py-2.5 bg-[#4274D9] hover:bg-[#3461c2] text-white text-xs font-bold rounded-lg shadow-lg shadow-[#4274D9]/20 transition flex items-center justify-center gap-1.5 cursor-pointer"
             >
@@ -1518,6 +1674,9 @@ onMounted(() => {
               <Plus v-else class="w-3.5 h-3.5" />
               <span>{{ editingId ? 'UPDATE ENDPOINT' : 'REGISTER ENDPOINT' }}</span>
             </button>
+            <div v-else class="flex items-center justify-center text-[11px] text-slate-400 font-medium">
+              Read-only Access
+            </div>
           </div>
 
           <!-- Cancel Edit Mode Button -->
@@ -1527,7 +1686,7 @@ onMounted(() => {
               @click="cancelEdit"
               class="w-full py-1.5 text-center text-xs text-slate-700 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white bg-slate-100 hover:bg-slate-200 dark:bg-[#141824] dark:hover:bg-[#1b2234] rounded-lg border border-slate-300 dark:border-slate-700/80 transition cursor-pointer"
             >
-              {{ canManage ? 'Cancel Edit Mode' : 'Close Inspector' }}
+              Cancel Edit Mode
             </button>
           </div>
 
@@ -1575,7 +1734,6 @@ onMounted(() => {
           </div>
 
           <button
-            v-if="canManage"
             @click="cancelEdit(); form.type = 'Grafana Core API'"
             class="flex items-center gap-1 text-xs text-blue-700 dark:text-[#95CCDD] hover:text-blue-900 dark:hover:text-white font-bold uppercase transition cursor-pointer"
           >
@@ -1627,6 +1785,20 @@ onMounted(() => {
                   <span v-if="item.isActive" class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-[9px] font-bold uppercase">
                     ACTIVE
                   </span>
+
+                  <!-- Ownership / Sharing Badge -->
+                  <span
+                    v-if="item.isOwner"
+                    class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-100 dark:bg-[#141b2d] border border-slate-200 dark:border-[#1f2842] text-slate-600 dark:text-slate-400"
+                  >
+                    {{ (item.visibility === 'shared' || (item.sharesCount && item.sharesCount > 0)) ? `Shared (${item.sharesCount || 0})` : 'Private' }}
+                  </span>
+                  <span
+                    v-else-if="item.ownerUsername"
+                    class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-500/10 border border-purple-500/30 text-purple-600 dark:text-purple-400"
+                  >
+                    Owner: @{{ item.ownerUsername }}
+                  </span>
                 </div>
 
                 <div class="flex items-center gap-2">
@@ -1669,9 +1841,19 @@ onMounted(() => {
                 Ping Test
               </button>
 
+              <!-- Share Access Button -->
+              <button
+                v-if="canManageItem(item)"
+                @click="openShareModal(item, $event)"
+                class="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/80 dark:hover:bg-slate-700 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white border border-slate-300 dark:border-slate-700/60 transition shadow-xs cursor-pointer"
+                title="Share Connection Access"
+              >
+                <Users class="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
+              </button>
+
               <!-- View / Inspect Button (For Read-Only Users) -->
               <button
-                v-if="!canManage"
+                v-if="!canManageItem(item)"
                 @click="handleEditConnection(item)"
                 class="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/80 dark:hover:bg-slate-700 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white border border-slate-300 dark:border-slate-700/60 transition shadow-xs cursor-pointer"
                 title="Inspect Connection Details"
@@ -1681,7 +1863,7 @@ onMounted(() => {
 
               <!-- Edit Button (Manage Permission Required) -->
               <button
-                v-if="canManage"
+                v-if="canManageItem(item)"
                 @click="handleEditConnection(item)"
                 class="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-blue-50 dark:bg-slate-800/80 text-slate-600 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400 dark:hover:bg-blue-950/60 border border-slate-300 dark:border-slate-700/60 transition shadow-xs cursor-pointer"
                 title="Edit Connection"
@@ -1691,7 +1873,7 @@ onMounted(() => {
 
               <!-- Delete Button (Manage Permission Required) -->
               <button
-                v-if="canManage"
+                v-if="canManageItem(item)"
                 @click="confirmDelete(item)"
                 class="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-rose-50 dark:bg-slate-800/80 text-slate-600 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 dark:hover:bg-rose-950/60 border border-slate-300 dark:border-slate-700/60 transition shadow-xs cursor-pointer"
                 title="Delete Connection"
@@ -1764,6 +1946,158 @@ onMounted(() => {
       <button @click="toast = null" class="ml-2 text-slate-400 hover:text-slate-600 dark:hover:text-white cursor-pointer">
         ✕
       </button>
+    </div>
+
+    <!-- Standard Share Access Modal (Conforming strictly to AGENTS.md) -->
+    <div
+      v-if="isShareModalOpen && selectedItemForShare"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 dark:bg-black/80 backdrop-blur-sm animate-in fade-in"
+    >
+      <div class="bg-white dark:bg-[#111624] border border-slate-200 dark:border-[#1f283d] rounded-2xl w-full max-w-lg shadow-2xl p-6 space-y-4">
+        <!-- Modal Header -->
+        <div class="flex items-center justify-between border-b border-slate-200 dark:border-[#1b2234] pb-3">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center">
+              <Users class="w-4 h-4" />
+            </div>
+            <div>
+              <h3 class="text-sm font-bold text-slate-900 dark:text-white">Share Connection Access</h3>
+              <p class="text-[11px] text-slate-500 dark:text-slate-400">
+                {{ selectedItemForShare.name }} ({{ selectedItemForShare.type }})
+              </p>
+            </div>
+          </div>
+          <button
+            @click="isShareModalOpen = false"
+            class="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-white transition cursor-pointer"
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <div class="space-y-4">
+          <!-- Connection Owner Banner -->
+          <div class="p-3 rounded-xl bg-slate-50 dark:bg-[#0c101a] border border-slate-200 dark:border-[#1b2234] flex items-center justify-between text-xs">
+            <span class="text-slate-500 dark:text-slate-400 font-medium">Connection Owner</span>
+            <span class="text-slate-800 dark:text-slate-200 font-semibold font-mono bg-white dark:bg-[#141b2d] px-2.5 py-1 rounded-lg border border-slate-200 dark:border-[#1f2842]">
+              @{{ selectedItemForShare.ownerUsername || 'You' }}
+            </span>
+          </div>
+
+          <!-- Grant Access Form -->
+          <div class="p-4 bg-slate-50 dark:bg-[#0c101a] border border-slate-200 dark:border-[#1b2234] rounded-xl space-y-3">
+            <h4 class="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider flex items-center gap-2">
+              <Users class="w-3.5 h-3.5 text-slate-400" />
+              <span>Grant Access to User</span>
+            </h4>
+
+            <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
+              <div class="sm:col-span-6 space-y-1">
+                <label class="block text-[11px] text-slate-500 dark:text-slate-400 font-medium">Select User</label>
+                <select
+                  v-model="shareForm.userId"
+                  class="w-full bg-white dark:bg-[#141b2d] border border-slate-200 dark:border-[#1f2842] rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 transition"
+                >
+                  <option value="" disabled>Choose user...</option>
+                  <option
+                    v-for="u in availableUsers.filter(u => u.id !== authStore.user?.id)"
+                    :key="u.id"
+                    :value="u.id"
+                  >
+                    {{ u.username }} ({{ u.role }})
+                  </option>
+                </select>
+              </div>
+
+              <div class="sm:col-span-4 space-y-1">
+                <label class="block text-[11px] text-slate-500 dark:text-slate-400 font-medium">Access Level</label>
+                <select
+                  v-model="shareForm.permission"
+                  class="w-full bg-white dark:bg-[#141b2d] border border-slate-200 dark:border-[#1f2842] rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 transition"
+                >
+                  <option value="read">Read Only</option>
+                  <option value="manage">Full Control</option>
+                </select>
+              </div>
+
+              <div class="sm:col-span-2 flex items-end">
+                <button
+                  type="button"
+                  @click="handleGrantConnectionShare"
+                  :disabled="!shareForm.userId || isShareSubmitting"
+                  class="w-full py-2 px-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition shadow-xs flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <RotateCcw v-if="isShareSubmitting" class="w-3.5 h-3.5 animate-spin" />
+                  <span>{{ isShareSubmitting ? '...' : 'Grant' }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Active Shares List -->
+          <div class="space-y-2">
+            <h4 class="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+              Currently Shared Users ({{ connectionShares.length }})
+            </h4>
+
+            <div v-if="isShareLoading" class="p-6 text-center text-xs text-slate-500">
+              Loading access list...
+            </div>
+            <div v-else-if="connectionShares.length === 0" class="p-6 text-center text-xs text-slate-500 bg-slate-50 dark:bg-[#0c101a] rounded-xl border border-slate-200 dark:border-[#1b2234]">
+              This connection is private. Only you can view and use it.
+            </div>
+            <div v-else class="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              <div
+                v-for="s in connectionShares"
+                :key="s.id"
+                class="p-3 bg-slate-50 dark:bg-[#0c101a] border border-slate-200 dark:border-[#1b2234] rounded-xl flex items-center justify-between gap-3 text-xs"
+              >
+                <div class="flex items-center gap-2.5">
+                  <div class="w-7 h-7 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-white font-bold text-xs flex items-center justify-center shrink-0">
+                    {{ s.username.substring(0, 2).toUpperCase() }}
+                  </div>
+                  <div>
+                    <p class="font-semibold text-slate-900 dark:text-white">@{{ s.username }}</p>
+                    <p class="text-[10px] text-slate-500 font-mono">
+                      Granted by @{{ s.sharedByUsername || 'Admin' }}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="flex items-center gap-2">
+                  <span
+                    :class="[
+                      'px-2 py-0.5 rounded text-[10px] font-bold uppercase',
+                      s.permission === 'manage' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30' : 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/30'
+                    ]"
+                  >
+                    {{ s.permission === 'manage' ? 'Full Control' : 'Read Only' }}
+                  </span>
+
+                  <button
+                    type="button"
+                    @click="handleRevokeConnectionShare(s.id)"
+                    class="p-1 rounded text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 transition cursor-pointer"
+                    title="Revoke Access"
+                  >
+                    <Trash2 class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-2 flex justify-end border-t border-slate-200 dark:border-[#1b2234]">
+          <button
+            type="button"
+            @click="isShareModalOpen = false"
+            class="px-4 py-1.5 bg-slate-100 dark:bg-[#1b2339] hover:bg-slate-200 dark:hover:bg-[#252f4c] text-slate-700 dark:text-slate-300 rounded-lg text-xs font-semibold cursor-pointer"
+          >
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
