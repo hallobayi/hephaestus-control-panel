@@ -550,6 +550,7 @@ type VaultwardenConfig struct {
 	IsActive       bool                  `json:"isActive"`
 	LastSyncedAt   *time.Time            `json:"lastSyncedAt,omitempty"`
 	CachedCiphers  []VaultCredentialItem `json:"cachedCiphers,omitempty"`
+	CachedFolders  []VaultFolder         `json:"cachedFolders,omitempty"`
 	UserID         *int                  `json:"userId,omitempty"`
 	OwnerUsername  string                `json:"ownerUsername,omitempty"`
 	Visibility     string                `json:"visibility"`
@@ -569,6 +570,15 @@ type ConnectionShare struct {
 	SharedBy         *int      `json:"sharedBy,omitempty"`
 	SharedByUsername string    `json:"sharedByUsername,omitempty"`
 	CreatedAt        time.Time `json:"createdAt"`
+}
+
+type VaultFolder struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type CreateVaultFolderRequest struct {
+	Name string `json:"name" binding:"required"`
 }
 
 type VaultCredentialItem struct {
@@ -594,6 +604,7 @@ type VaultSyncResponse struct {
 	NotesCount   int                   `json:"notesCount"`
 	LastSyncedAt time.Time             `json:"lastSyncedAt"`
 	Items        []VaultCredentialItem `json:"items"`
+	Folders      []VaultFolder         `json:"folders,omitempty"`
 }
 
 type CreateVaultCipherRequest struct {

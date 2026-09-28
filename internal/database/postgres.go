@@ -507,6 +507,7 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 		-- 1. Vaultwarden
 		ALTER TABLE vaultwarden_configs ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
 		ALTER TABLE vaultwarden_configs ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'private';
+		ALTER TABLE vaultwarden_configs ADD COLUMN IF NOT EXISTS cached_folders JSONB DEFAULT '[]'::jsonb;
 		CREATE INDEX IF NOT EXISTS idx_vaultwarden_configs_user_id ON vaultwarden_configs(user_id);
 		UPDATE vaultwarden_configs SET visibility = 'private' WHERE visibility IS NULL OR visibility = '';
 		UPDATE vaultwarden_configs 

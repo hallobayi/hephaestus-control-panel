@@ -472,3 +472,105 @@ func (h *VaultwardenHandler) UpdateVisibility(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Visibility updated successfully."})
 }
+
+// GetFolders returns all folders from cache or remote Vaultwarden
+func (h *VaultwardenHandler) GetFolders(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+	configID := c.Query("id")
+
+	folders, err := h.vwService.GetFolders(c.Request.Context(), userID, userRole, configID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    folders,
+	})
+}
+
+// CreateFolder creates a new folder in Vaultwarden
+func (h *VaultwardenHandler) CreateFolder(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+	configID := c.Query("id")
+
+	var input domain.CreateVaultFolderRequest
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Folder name is required",
+		})
+		return
+	}
+
+	folder, err := h.vwService.CreateFolder(c.Request.Context(), userID, userRole, input, configID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"success": true,
+		"message": "Folder created successfully",
+		"data":    folder,
+	})
+}
+
+// UpdateFolder updates an existing folder in Vaultwarden
+func (h *VaultwardenHandler) UpdateFolder(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+	configID := c.Query("id")
+	folderID := c.Param("id")
+
+	var input domain.CreateVaultFolderRequest
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Folder name is required",
+		})
+		return
+	}
+
+	folder, err := h.vwService.UpdateFolder(c.Request.Context(), userID, userRole, folderID, input, configID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Folder updated successfully",
+		"data":    folder,
+	})
+}
+
+// DeleteFolder deletes a folder from Vaultwarden
+func (h *VaultwardenHandler) DeleteFolder(c *gin.Context) {
+	userID, userRole := getUserContext(c)
+	configID := c.Query("id")
+	folderID := c.Param("id")
+
+	if err := h.vwService.DeleteFolder(c.Request.Context(), userID, userRole, folderID, configID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Folder deleted successfully",
+	})
+}
+

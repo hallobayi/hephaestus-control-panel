@@ -49,6 +49,7 @@ func (r *VaultwardenRepository) GetConfig(ctx context.Context, userID int, userR
 		if isAdmin {
 			query = `
 				SELECT v.id, v.name, v.server_url, v.email, v.master_password_encrypted, v.is_active, v.last_synced_at, v.cached_ciphers, 
+				       COALESCE(v.cached_folders, '[]'::jsonb),
 				       v.user_id, COALESCE(u.username, 'Admin'), COALESCE(v.visibility, 'private'), v.created_at, v.updated_at,
 				       (SELECT COUNT(*) FROM vaultwarden_shares WHERE config_id = v.id) AS shares_count,
 				       'manage' AS user_permission
@@ -61,6 +62,7 @@ func (r *VaultwardenRepository) GetConfig(ctx context.Context, userID int, userR
 		} else {
 			query = `
 				SELECT v.id, v.name, v.server_url, v.email, v.master_password_encrypted, v.is_active, v.last_synced_at, v.cached_ciphers, 
+				       COALESCE(v.cached_folders, '[]'::jsonb),
 				       v.user_id, COALESCE(u.username, 'Admin'), COALESCE(v.visibility, 'private'), v.created_at, v.updated_at,
 				       (SELECT COUNT(*) FROM vaultwarden_shares WHERE config_id = v.id) AS shares_count,
 				       COALESCE(vs.permission, CASE WHEN v.user_id = $2 THEN 'manage' WHEN v.visibility = 'public' THEN 'read' ELSE '' END) AS user_permission
@@ -77,6 +79,7 @@ func (r *VaultwardenRepository) GetConfig(ctx context.Context, userID int, userR
 		if isAdmin {
 			query = `
 				SELECT v.id, v.name, v.server_url, v.email, v.master_password_encrypted, v.is_active, v.last_synced_at, v.cached_ciphers, 
+				       COALESCE(v.cached_folders, '[]'::jsonb),
 				       v.user_id, COALESCE(u.username, 'Admin'), COALESCE(v.visibility, 'private'), v.created_at, v.updated_at,
 				       (SELECT COUNT(*) FROM vaultwarden_shares WHERE config_id = v.id) AS shares_count,
 				       'manage' AS user_permission
@@ -89,6 +92,7 @@ func (r *VaultwardenRepository) GetConfig(ctx context.Context, userID int, userR
 		} else {
 			query = `
 				SELECT v.id, v.name, v.server_url, v.email, v.master_password_encrypted, v.is_active, v.last_synced_at, v.cached_ciphers, 
+				       COALESCE(v.cached_folders, '[]'::jsonb),
 				       v.user_id, COALESCE(u.username, 'Admin'), COALESCE(v.visibility, 'private'), v.created_at, v.updated_at,
 				       (SELECT COUNT(*) FROM vaultwarden_shares WHERE config_id = v.id) AS shares_count,
 				       COALESCE(vs.permission, CASE WHEN v.user_id = $1 THEN 'manage' WHEN v.visibility = 'public' THEN 'read' ELSE '' END) AS user_permission
@@ -115,10 +119,11 @@ func (r *VaultwardenRepository) GetConfig(ctx context.Context, userID int, userR
 	var cfg domain.VaultwardenConfig
 	var encPassword string
 	var cachedJSON []byte
+	var cachedFoldersJSON []byte
 
 	if err := rows.Scan(
 		&cfg.ID, &cfg.Name, &cfg.ServerURL, &cfg.Email, &encPassword, &cfg.IsActive,
-		&cfg.LastSyncedAt, &cachedJSON, &cfg.UserID, &cfg.OwnerUsername, &cfg.Visibility,
+		&cfg.LastSyncedAt, &cachedJSON, &cachedFoldersJSON, &cfg.UserID, &cfg.OwnerUsername, &cfg.Visibility,
 		&cfg.CreatedAt, &cfg.UpdatedAt, &cfg.SharesCount, &cfg.UserPermission,
 	); err != nil {
 		return nil, err
@@ -137,6 +142,9 @@ func (r *VaultwardenRepository) GetConfig(ctx context.Context, userID int, userR
 
 	if len(cachedJSON) > 0 {
 		_ = json.Unmarshal(cachedJSON, &cfg.CachedCiphers)
+	}
+	if len(cachedFoldersJSON) > 0 {
+		_ = json.Unmarshal(cachedFoldersJSON, &cfg.CachedFolders)
 	}
 
 	return &cfg, nil
@@ -318,6 +326,35 @@ func (r *VaultwardenRepository) SaveConfig(ctx context.Context, cfg domain.Vault
 	}
 
 	return r.GetConfigPublic(ctx, userID, userRole, cfg.ID)
+}
+
+// UpdateCachedData persists decrypted ciphers and folders in JSONB cache for fast retrieval
+func (r *VaultwardenRepository) UpdateCachedData(ctx context.Context, id string, ciphers []domain.VaultCredentialItem, folders []domain.VaultFolder, lastSynced time.Time) error {
+	pool, err := database.GetPool()
+	if err != nil {
+		return err
+	}
+
+	rawCiphers, err := json.Marshal(ciphers)
+	if err != nil {
+		return fmt.Errorf("failed to marshal ciphers: %w", err)
+	}
+
+	if folders == nil {
+		folders = []domain.VaultFolder{}
+	}
+	rawFolders, err := json.Marshal(folders)
+	if err != nil {
+		return fmt.Errorf("failed to marshal folders: %w", err)
+	}
+
+	_, err = pool.Exec(ctx, `
+		UPDATE vaultwarden_configs
+		SET cached_ciphers = $1, cached_folders = $2, last_synced_at = $3, updated_at = NOW()
+		WHERE id = $4
+	`, rawCiphers, rawFolders, lastSynced, id)
+
+	return err
 }
 
 // UpdateCachedCiphers persists decrypted ciphers in JSONB cache for fast retrieval

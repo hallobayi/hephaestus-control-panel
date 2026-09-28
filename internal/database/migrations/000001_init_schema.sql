@@ -455,6 +455,7 @@ CREATE TABLE IF NOT EXISTS vaultwarden_configs (
     is_active BOOLEAN DEFAULT true,
     last_synced_at TIMESTAMP WITH TIME ZONE,
     cached_ciphers JSONB DEFAULT '[]'::jsonb,
+    cached_folders JSONB DEFAULT '[]'::jsonb,
     user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     visibility VARCHAR(20) NOT NULL DEFAULT 'private',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,

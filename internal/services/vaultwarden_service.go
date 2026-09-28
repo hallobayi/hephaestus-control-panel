@@ -140,7 +140,7 @@ func (s *VaultwardenService) TestConnection(ctx context.Context, serverURL, emai
 		return false, "Server URL, email, and master password are required", 0
 	}
 
-	items, err := s.fetchAndDecryptVault(ctx, serverURL, email, masterPassword)
+	items, _, err := s.fetchAndDecryptVault(ctx, serverURL, email, masterPassword)
 	if err != nil {
 		return false, err.Error(), 0
 	}
@@ -158,15 +158,15 @@ func (s *VaultwardenService) SyncVault(ctx context.Context, userID int, userRole
 		return nil, errors.New("vaultwarden is not configured yet. Please configure server URL, email, and master password")
 	}
 
-	items, err := s.fetchAndDecryptVault(ctx, cfg.ServerURL, cfg.Email, cfg.MasterPassword)
+	items, folders, err := s.fetchAndDecryptVault(ctx, cfg.ServerURL, cfg.Email, cfg.MasterPassword)
 	if err != nil {
 		logger.Error("Vaultwarden", "Sync failed", err)
 		return nil, fmt.Errorf("sync failed: %w", err)
 	}
 
 	now := time.Now()
-	if err := s.repo.UpdateCachedCiphers(ctx, cfg.ID, items, now); err != nil {
-		logger.Warn("Vaultwarden", fmt.Sprintf("Failed to update cached ciphers in database: %v", err))
+	if err := s.repo.UpdateCachedData(ctx, cfg.ID, items, folders, now); err != nil {
+		logger.Warn("Vaultwarden", fmt.Sprintf("Failed to update cached data in database: %v", err))
 	}
 
 	loginsCount := 0
@@ -187,6 +187,7 @@ func (s *VaultwardenService) SyncVault(ctx context.Context, userID int, userRole
 		NotesCount:   notesCount,
 		LastSyncedAt: now,
 		Items:        items,
+		Folders:      folders,
 	}, nil
 }
 
@@ -252,6 +253,204 @@ func (s *VaultwardenService) GetCiphers(ctx context.Context, userID int, userRol
 	return filtered, nil
 }
 
+// GetFolders returns all folders from cache or syncs from Vaultwarden
+func (s *VaultwardenService) GetFolders(ctx context.Context, userID int, userRole string, configID ...string) ([]domain.VaultFolder, error) {
+	cfg, err := s.repo.GetConfig(ctx, userID, userRole, configID...)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return []domain.VaultFolder{}, nil
+	}
+
+	folders := cfg.CachedFolders
+	if len(folders) == 0 && cfg.MasterPassword != "" {
+		syncRes, err := s.SyncVault(ctx, userID, userRole, cfg.ID)
+		if err == nil && syncRes != nil {
+			folders = syncRes.Folders
+		}
+	}
+	if folders == nil {
+		folders = []domain.VaultFolder{}
+	}
+	return folders, nil
+}
+
+// CreateFolder encrypts and creates a new folder directly in Vaultwarden
+func (s *VaultwardenService) CreateFolder(ctx context.Context, userID int, userRole string, req domain.CreateVaultFolderRequest, configID ...string) (*domain.VaultFolder, error) {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return nil, errors.New("folder name is required")
+	}
+
+	cfg, err := s.repo.GetConfig(ctx, userID, userRole, configID...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve vaultwarden configuration: %w", err)
+	}
+	if cfg == nil || cfg.ServerURL == "" || cfg.Email == "" || cfg.MasterPassword == "" {
+		return nil, errors.New("vaultwarden is not configured yet. Please configure Vaultwarden connection first")
+	}
+
+	authCtx, err := s.authenticateAndGetKeys(ctx, cfg.ServerURL, cfg.Email, cfg.MasterPassword)
+	if err != nil {
+		return nil, fmt.Errorf("vaultwarden authentication failed: %w", err)
+	}
+
+	encName, err := s.encryptCipherString(name, authCtx.UserEncKey, authCtx.UserMacKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt folder name: %w", err)
+	}
+
+	bodyMap := map[string]string{
+		"name": encName,
+	}
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode folder request: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/api/folders", authCtx.ServerURL)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+authCtx.AccessToken)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to post folder to Vaultwarden: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("vaultwarden rejected folder creation (HTTP %d): %s", resp.StatusCode, string(raw))
+	}
+
+	var createdRaw struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&createdRaw)
+
+	// Sync local vault cache to update folders list
+	_, _ = s.SyncVault(ctx, userID, userRole, cfg.ID)
+
+	return &domain.VaultFolder{
+		ID:   createdRaw.ID,
+		Name: name,
+	}, nil
+}
+
+// UpdateFolder encrypts and updates an existing folder in Vaultwarden
+func (s *VaultwardenService) UpdateFolder(ctx context.Context, userID int, userRole string, folderID string, req domain.CreateVaultFolderRequest, configID ...string) (*domain.VaultFolder, error) {
+	folderID = strings.TrimSpace(folderID)
+	if folderID == "" {
+		return nil, errors.New("folder ID is required")
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return nil, errors.New("folder name is required")
+	}
+
+	cfg, err := s.repo.GetConfig(ctx, userID, userRole, configID...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve vaultwarden configuration: %w", err)
+	}
+	if cfg == nil || cfg.ServerURL == "" || cfg.Email == "" || cfg.MasterPassword == "" {
+		return nil, errors.New("vaultwarden is not configured yet. Please configure Vaultwarden connection first")
+	}
+
+	authCtx, err := s.authenticateAndGetKeys(ctx, cfg.ServerURL, cfg.Email, cfg.MasterPassword)
+	if err != nil {
+		return nil, fmt.Errorf("vaultwarden authentication failed: %w", err)
+	}
+
+	encName, err := s.encryptCipherString(name, authCtx.UserEncKey, authCtx.UserMacKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt folder name: %w", err)
+	}
+
+	bodyMap := map[string]string{
+		"name": encName,
+	}
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode folder request: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/api/folders/%s", authCtx.ServerURL, url.PathEscape(folderID))
+	httpReq, err := http.NewRequestWithContext(ctx, "PUT", endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+authCtx.AccessToken)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update folder in Vaultwarden: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("vaultwarden rejected folder update (HTTP %d): %s", resp.StatusCode, string(raw))
+	}
+
+	_, _ = s.SyncVault(ctx, userID, userRole, cfg.ID)
+
+	return &domain.VaultFolder{
+		ID:   folderID,
+		Name: name,
+	}, nil
+}
+
+// DeleteFolder removes a folder from Vaultwarden
+func (s *VaultwardenService) DeleteFolder(ctx context.Context, userID int, userRole string, folderID string, configID ...string) error {
+	folderID = strings.TrimSpace(folderID)
+	if folderID == "" {
+		return errors.New("folder ID is required")
+	}
+
+	cfg, err := s.repo.GetConfig(ctx, userID, userRole, configID...)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve vaultwarden configuration: %w", err)
+	}
+	if cfg == nil || cfg.ServerURL == "" || cfg.Email == "" || cfg.MasterPassword == "" {
+		return errors.New("vaultwarden is not configured yet. Please configure Vaultwarden connection first")
+	}
+
+	authCtx, err := s.authenticateAndGetKeys(ctx, cfg.ServerURL, cfg.Email, cfg.MasterPassword)
+	if err != nil {
+		return fmt.Errorf("vaultwarden authentication failed: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/api/folders/%s", authCtx.ServerURL, url.PathEscape(folderID))
+	httpReq, err := http.NewRequestWithContext(ctx, "DELETE", endpoint, nil)
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+authCtx.AccessToken)
+	httpReq.Header.Set("Accept", "application/json")
+
+	resp, err := s.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("failed to delete folder from Vaultwarden: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("vaultwarden rejected folder deletion (HTTP %d): %s", resp.StatusCode, string(raw))
+	}
+
+	_, _ = s.SyncVault(ctx, userID, userRole, cfg.ID)
+	return nil
+}
+
 type vwAuthContext struct {
 	ServerURL   string
 	AccessToken string
@@ -298,16 +497,16 @@ func (s *VaultwardenService) authenticateAndGetKeys(ctx context.Context, serverU
 	}, nil
 }
 
-func (s *VaultwardenService) fetchAndDecryptVault(ctx context.Context, serverURL, email, password string) ([]domain.VaultCredentialItem, error) {
+func (s *VaultwardenService) fetchAndDecryptVault(ctx context.Context, serverURL, email, password string) ([]domain.VaultCredentialItem, []domain.VaultFolder, error) {
 	authCtx, err := s.authenticateAndGetKeys(ctx, serverURL, email, password)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Step 6: Sync Vault Data
 	syncData, err := s.doSync(ctx, authCtx.ServerURL, authCtx.AccessToken)
 	if err != nil {
-		return nil, fmt.Errorf("vault sync failed: %w", err)
+		return nil, nil, fmt.Errorf("vault sync failed: %w", err)
 	}
 
 	userEncKey := authCtx.UserEncKey
@@ -315,13 +514,17 @@ func (s *VaultwardenService) fetchAndDecryptVault(ctx context.Context, serverURL
 
 	// Step 7: Decrypt Folder Names
 	folderMap := make(map[string]string)
+	folders := make([]domain.VaultFolder, 0, len(syncData.Folders))
 	for _, f := range syncData.Folders {
-		decName, err := s.decryptCipherString(f.Name, userEncKey, userMacKey)
-		if err == nil {
-			folderMap[f.ID] = decName
-		} else {
-			folderMap[f.ID] = f.Name
+		folderName := f.Name
+		if decName, err := s.decryptCipherString(f.Name, userEncKey, userMacKey); err == nil {
+			folderName = decName
 		}
+		folderMap[f.ID] = folderName
+		folders = append(folders, domain.VaultFolder{
+			ID:   f.ID,
+			Name: folderName,
+		})
 	}
 
 	// Step 8: Decrypt Ciphers
@@ -407,7 +610,7 @@ func (s *VaultwardenService) fetchAndDecryptVault(ctx context.Context, serverURL
 		items = append(items, item)
 	}
 
-	return items, nil
+	return items, folders, nil
 }
 
 func (s *VaultwardenService) doPrelogin(ctx context.Context, serverURL, email string) (*bwPreloginResponse, error) {
@@ -784,9 +987,15 @@ func (s *VaultwardenService) CreateCipher(ctx context.Context, userID int, userR
 		cipherType = 1 // Default to Login
 	}
 
+	var folderID *string
+	if req.FolderID != nil && strings.TrimSpace(*req.FolderID) != "" {
+		t := strings.TrimSpace(*req.FolderID)
+		folderID = &t
+	}
+
 	bodyMap := map[string]interface{}{
 		"type":           cipherType,
-		"folderId":       req.FolderID,
+		"folderId":       folderID,
 		"organizationId": nil,
 		"name":           encName,
 		"notes":          encNotes,
@@ -959,9 +1168,15 @@ func (s *VaultwardenService) UpdateCipher(ctx context.Context, userID int, userR
 		cipherType = 1 // Default to Login
 	}
 
+	var folderID *string
+	if req.FolderID != nil && strings.TrimSpace(*req.FolderID) != "" {
+		t := strings.TrimSpace(*req.FolderID)
+		folderID = &t
+	}
+
 	bodyMap := map[string]interface{}{
 		"type":           cipherType,
-		"folderId":       req.FolderID,
+		"folderId":       folderID,
 		"organizationId": nil,
 		"name":           encName,
 		"notes":          encNotes,
