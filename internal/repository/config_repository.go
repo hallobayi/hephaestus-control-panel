@@ -169,7 +169,8 @@ func (r *ConfigRepository) SaveGrafana(ctx context.Context, c domain.GrafanaConf
 	query := `INSERT INTO grafana_configs (id, name, host, token, datasource_uid, is_active, user_id, visibility)
               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
               ON CONFLICT (id) DO UPDATE SET
-                name = EXCLUDED.name, host = EXCLUDED.host, token = EXCLUDED.token,
+                name = EXCLUDED.name, host = EXCLUDED.host,
+                token = CASE WHEN EXCLUDED.token != '' THEN EXCLUDED.token ELSE grafana_configs.token END,
                 datasource_uid = EXCLUDED.datasource_uid, is_active = EXCLUDED.is_active,
                 visibility = COALESCE(NULLIF(EXCLUDED.visibility, ''), grafana_configs.visibility)`
 	_, err = pool.Exec(ctx, query, c.ID, c.Name, c.Host, c.Token, c.DatasourceUID, c.IsActive, assignedUserID, c.Visibility)
@@ -398,14 +399,20 @@ func (r *ConfigRepository) SavePrometheus(ctx context.Context, c domain.Promethe
 	}
 
 	var encPwd, encKey *string
-	if c.SSHPassword != nil && *c.SSHPassword != "" && *c.SSHPassword != "********" {
-		if enc, err := config.EncryptText(*c.SSHPassword); err == nil {
-			encPwd = &enc
+	if c.SSHPassword != nil {
+		cleanPwd := strings.TrimSpace(*c.SSHPassword)
+		if cleanPwd != "" && cleanPwd != "********" && cleanPwd != "••••••" {
+			if enc, err := config.EncryptText(cleanPwd); err == nil {
+				encPwd = &enc
+			}
 		}
 	}
-	if c.SSHKey != nil && *c.SSHKey != "" && *c.SSHKey != "********" {
-		if enc, err := config.EncryptText(*c.SSHKey); err == nil {
-			encKey = &enc
+	if c.SSHKey != nil {
+		cleanKey := strings.TrimSpace(*c.SSHKey)
+		if cleanKey != "" && cleanKey != "********" && cleanKey != "••••••" {
+			if enc, err := config.EncryptText(cleanKey); err == nil {
+				encKey = &enc
+			}
 		}
 	}
 
@@ -422,7 +429,10 @@ func (r *ConfigRepository) SavePrometheus(ctx context.Context, c domain.Promethe
               ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name, mode = EXCLUDED.mode, path = EXCLUDED.path, reload_url = EXCLUDED.reload_url,
                 ssh_host = EXCLUDED.ssh_host, ssh_port = EXCLUDED.ssh_port, ssh_user = EXCLUDED.ssh_user,
-                ssh_auth = EXCLUDED.ssh_auth, is_active = EXCLUDED.is_active,
+                ssh_auth = EXCLUDED.ssh_auth,
+                ssh_password = CASE WHEN EXCLUDED.ssh_password IS NOT NULL THEN EXCLUDED.ssh_password ELSE prometheus_configs.ssh_password END,
+                ssh_key = CASE WHEN EXCLUDED.ssh_key IS NOT NULL THEN EXCLUDED.ssh_key ELSE prometheus_configs.ssh_key END,
+                is_active = EXCLUDED.is_active,
                 visibility = COALESCE(NULLIF(EXCLUDED.visibility, ''), prometheus_configs.visibility)`
 	_, err = pool.Exec(ctx, query, c.ID, c.Name, c.Mode, c.Path, c.ReloadURL, c.SSHHost, c.SSHPort, c.SSHUser, c.SSHAuth, encPwd, encKey, c.IsActive, assignedUserID, c.Visibility)
 	return err
