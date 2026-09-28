@@ -393,27 +393,6 @@ func (h *DockerHandler) TestConnection(c *gin.Context) {
 	})
 }
 
-func (h *DockerHandler) DeleteConnection(c *gin.Context) {
-	id := c.Param("id")
-	if id == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "Connection ID is required"})
-		return
-	}
-
-	if err := h.dockerRepo.DeleteConnection(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to delete Docker connection",
-			"details": err.Error(),
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Docker connection deleted successfully",
-	})
-}
 
 // -------------------------------------------------------------
 // Container Handlers
