@@ -267,9 +267,13 @@ func (s *TopologyService) SyncFromRemoteServers(ctx context.Context, sheetID *in
 		devID := fmt.Sprintf("remote-%s", host.ID)
 
 		var posX, posY *float64
+		targetSheetID := sheetID
 		if ex, exists := existingMap[devID]; exists {
 			posX = ex.X
 			posY = ex.Y
+			if ex.SheetID != nil {
+				targetSheetID = ex.SheetID
+			}
 		} else {
 			x := baseX + float64((idx%4)*200)
 			y := baseY + float64((idx/4)*160)
@@ -295,7 +299,7 @@ func (s *TopologyService) SyncFromRemoteServers(ctx context.Context, sheetID *in
 			Status:     "online",
 			Sources:    []string{"REMOTE", "SSH"},
 			Labels:     labels,
-			SheetID:    sheetID,
+			SheetID:    targetSheetID,
 			X:          posX,
 			Y:          posY,
 		}

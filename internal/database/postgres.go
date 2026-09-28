@@ -483,10 +483,37 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 		CREATE INDEX IF NOT EXISTS idx_topology_sheets_user_id ON topology_sheets(user_id);
 
 		ALTER TABLE topology_sheets ALTER COLUMN visibility SET DEFAULT 'private';
-		UPDATE topology_sheets SET visibility = 'private' WHERE visibility = 'public' OR visibility IS NULL OR visibility = '';
+		UPDATE topology_sheets SET visibility = 'private' WHERE visibility IS NULL OR visibility = '';
 		UPDATE topology_sheets 
 		SET user_id = (SELECT id FROM users WHERE role = 'ADMIN' ORDER BY id ASC LIMIT 1)
 		WHERE user_id IS NULL AND EXISTS (SELECT 1 FROM users WHERE role = 'ADMIN');
+
+		-- Restore visibility of existing sheets so they remain accessible across updates
+		UPDATE topology_sheets SET visibility = 'public' WHERE id IN (1, 3, 4);
+
+		-- Assign devices connected on specific sheets to their active sheets
+		UPDATE topology_devices 
+		SET sheet_id = 4 
+		WHERE (sheet_id = 1 OR sheet_id IS NULL) 
+		  AND id IN (
+		    SELECT source_id FROM topology_edges WHERE sheet_id = 4 
+		    UNION 
+		    SELECT target_id FROM topology_edges WHERE sheet_id = 4
+		  );
+
+		UPDATE topology_devices 
+		SET sheet_id = 3 
+		WHERE (sheet_id = 1 OR sheet_id IS NULL) 
+		  AND id IN (
+		    SELECT source_id FROM topology_edges WHERE sheet_id = 3 
+		    UNION 
+		    SELECT target_id FROM topology_edges WHERE sheet_id = 3
+		  )
+		  AND id NOT IN (
+		    SELECT source_id FROM topology_edges WHERE sheet_id = 4 
+		    UNION 
+		    SELECT target_id FROM topology_edges WHERE sheet_id = 4
+		  );
 
 		CREATE TABLE IF NOT EXISTS topology_sheet_shares (
 			id VARCHAR(50) PRIMARY KEY,

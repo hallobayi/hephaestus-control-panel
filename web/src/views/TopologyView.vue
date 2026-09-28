@@ -315,7 +315,7 @@ const fetchSheets = async () => {
       activeSheetId.value = null;
       if (isAdmin.value && canManage.value) {
         try {
-          const defaultSheet = await axios.post('/api/v1/topology/sheets', { name: 'Honet-labs Topology', sortOrder: 0, visibility: 'private' });
+          const defaultSheet = await axios.post('/api/v1/topology/sheets', { name: 'Honet-labs Topology', sortOrder: 0, visibility: 'public' });
           if (defaultSheet.data.success) {
             sheets.value = [defaultSheet.data.data];
             activeSheetId.value = defaultSheet.data.data.id;

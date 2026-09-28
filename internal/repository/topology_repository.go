@@ -307,7 +307,15 @@ func (r *TopologyRepository) ListDevices(ctx context.Context, sheetID *int) ([]d
 	}
 
 	query := `SELECT id, name, ip_address, device_type, status, sources, labels, interfaces, sheet_id, x, y, created_at 
-              FROM topology_devices WHERE ($1::int IS NULL OR sheet_id = $1) ORDER BY name ASC`
+              FROM topology_devices 
+              WHERE ($1::int IS NULL 
+                 OR sheet_id = $1 
+                 OR id IN (
+                     SELECT source_id FROM topology_edges WHERE sheet_id = $1 
+                     UNION 
+                     SELECT target_id FROM topology_edges WHERE sheet_id = $1
+                 )) 
+              ORDER BY name ASC`
 	rows, err := pool.Query(ctx, query, sheetID)
 	if err != nil {
 		return nil, err
@@ -385,7 +393,11 @@ func (r *TopologyRepository) RemoveDeviceFromCanvas(ctx context.Context, id stri
 	}
 
 	// 2. Set sheet_id to NULL, x to NULL, y to NULL (unplaced from canvas)
-	_, err = pool.Exec(ctx, `UPDATE topology_devices SET sheet_id = NULL, x = NULL, y = NULL WHERE id = $1`, id)
+	if sheetID != nil {
+		_, err = pool.Exec(ctx, `UPDATE topology_devices SET sheet_id = NULL, x = NULL, y = NULL WHERE id = $1 AND (sheet_id = $2 OR sheet_id IS NULL)`, id, *sheetID)
+	} else {
+		_, err = pool.Exec(ctx, `UPDATE topology_devices SET sheet_id = NULL, x = NULL, y = NULL WHERE id = $1`, id)
+	}
 	return err
 }
 
