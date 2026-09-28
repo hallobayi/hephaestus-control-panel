@@ -1023,10 +1023,6 @@ func (s *VaultwardenService) UpdateCipher(ctx context.Context, userID int, userR
 		return nil, fmt.Errorf("vaultwarden rejected cipher update (HTTP %d): %s", resp.StatusCode, string(raw))
 	}
 
-	// Sync local vault cache in background
-	go func() {
-		_, _ = s.SyncVault(context.Background())
-	}()
 
 	uris := []string{}
 	if req.URI != "" {
