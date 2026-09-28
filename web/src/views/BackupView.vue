@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import axios from 'axios';
 import { useAuthStore } from '../stores/auth';
 import {
@@ -26,10 +27,12 @@ import {
   Download,
   ChevronLeft,
   ChevronRight,
+  ShieldAlert,
 } from 'lucide-vue-next';
 
-const router = useRouter?.() || null;
+const router = useRouter();
 const authStore = useAuthStore();
+const canRead = computed(() => authStore.can('backup', 'read'));
 const canManage = computed(() => authStore.can('backup', 'manage'));
 
 const activeTab = ref<'databases' | 'destinations' | 'schedules' | 'history'>('databases');
@@ -836,12 +839,47 @@ const generateLogText = (h: any) => {
 };
 
 onMounted(() => {
-  fetchAll();
+  if (canRead.value) {
+    fetchAll();
+  }
 });
 </script>
 
 <template>
-  <div class="space-y-6 max-w-7xl mx-auto font-sans">
+  <!-- Unauthorized Access Restricted State -->
+  <div v-if="!canRead" class="space-y-6 max-w-7xl mx-auto font-sans">
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 dark:border-[#1b2234] pb-4">
+      <div>
+        <h1 class="text-xl font-bold text-slate-900 dark:text-white tracking-tight">
+          Database Backup Manager
+        </h1>
+        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+          Automated multi-database backups and disaster recovery.
+        </p>
+      </div>
+    </div>
+    <div class="bg-white dark:bg-[#111624] border border-slate-200 dark:border-[#1f283d] rounded-2xl p-8 max-w-md mx-auto text-center space-y-4 shadow-sm mt-12">
+      <div class="w-12 h-12 rounded-full bg-slate-100 dark:bg-[#1b2234] text-slate-500 flex items-center justify-center mx-auto">
+        <ShieldAlert class="w-6 h-6 text-slate-600 dark:text-slate-400" />
+      </div>
+      <div class="space-y-1">
+        <h3 class="text-sm font-bold text-slate-900 dark:text-white">Access Restricted</h3>
+        <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+          You do not have permission to view or manage Database Backups. Please contact your system administrator to request access.
+        </p>
+      </div>
+      <div class="pt-2">
+        <router-link
+          to="/"
+          class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold transition"
+        >
+          <span>Return to Dashboard</span>
+        </router-link>
+      </div>
+    </div>
+  </div>
+
+  <div v-else class="space-y-6 max-w-7xl mx-auto font-sans">
     <!-- Header -->
     <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
       <div>

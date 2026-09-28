@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import axios from 'axios';
+import { useAuthStore } from '../stores/auth';
 import { 
   Database, 
   Terminal, 
@@ -11,6 +12,8 @@ import {
   CheckCircle2,
   AlertTriangle
 } from 'lucide-vue-next';
+
+const authStore = useAuthStore();
 
 interface ServiceCount {
   total: number;
@@ -27,9 +30,13 @@ const serviceStats = ref<ServiceCount>({
 });
 
 const backupHistory = ref<any[]>([]);
-const loading = ref(true);
+const loading = ref(false);
 
 const fetchDashboardData = async () => {
+  if (!authStore.can('backup', 'read')) {
+    backupHistory.value = [];
+    return;
+  }
   loading.value = true;
   try {
     const backupRes = await axios.get('/api/v1/backup/history?limit=10').catch(() => null);
@@ -122,13 +129,14 @@ onMounted(() => {
       </router-link>
     </div>
 
-    <!-- QUICK ACTIONS (3 Dedicated Options) -->
-    <div class="space-y-3">
+    <!-- QUICK ACTIONS (Dedicated Options) -->
+    <div v-if="authStore.can('remote_servers', 'read') || authStore.can('connections', 'read') || authStore.can('backup', 'read')" class="space-y-3">
       <h2 class="text-xs font-bold text-blue-800 dark:text-[#95CCDD] uppercase tracking-wider">Quick Actions</h2>
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         
         <!-- Action 1: Remote Server -->
         <a
+          v-if="authStore.can('remote_servers', 'read')"
           href="/remote-server"
           target="_blank"
           class="p-5 rounded-xl bg-white dark:bg-[#0e121c] border border-slate-200 dark:border-[#1b2234] hover:border-blue-400 dark:hover:border-[#4274D9]/60 hover:bg-slate-50 dark:hover:bg-[#121724] transition group flex flex-col justify-between"
@@ -155,6 +163,7 @@ onMounted(() => {
 
         <!-- Action 2: Add Connections -->
         <router-link
+          v-if="authStore.can('connections', 'read')"
           to="/connections"
           class="p-5 rounded-xl bg-white dark:bg-[#0e121c] border border-slate-200 dark:border-[#1b2234] hover:border-blue-400 dark:hover:border-[#4274D9]/60 hover:bg-slate-50 dark:hover:bg-[#121724] transition group flex flex-col justify-between"
         >
@@ -177,6 +186,7 @@ onMounted(() => {
 
         <!-- Action 3: Backup Manager -->
         <router-link
+          v-if="authStore.can('backup', 'read')"
           to="/backup"
           class="p-5 rounded-xl bg-white dark:bg-[#0e121c] border border-slate-200 dark:border-[#1b2234] hover:border-blue-400 dark:hover:border-[#4274D9]/60 hover:bg-slate-50 dark:hover:bg-[#121724] transition group flex flex-col justify-between"
         >
@@ -201,7 +211,7 @@ onMounted(() => {
     </div>
 
     <!-- 3. TABLE RECENT BACKUPS MANAGER -->
-    <div class="p-5 rounded-xl bg-white dark:bg-[#0e121c] border border-slate-200 dark:border-[#1b2234] space-y-4">
+    <div v-if="authStore.can('backup', 'read')" class="p-5 rounded-xl bg-white dark:bg-[#0e121c] border border-slate-200 dark:border-[#1b2234] space-y-4">
       <div class="flex items-center justify-between border-b border-slate-200 dark:border-[#1b2234] pb-3">
         <div>
           <h2 class="text-xs font-bold text-blue-800 dark:text-[#95CCDD] uppercase tracking-wider">Recent Database Backups</h2>

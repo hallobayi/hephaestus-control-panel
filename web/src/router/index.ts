@@ -21,31 +21,31 @@ const router = createRouter({
       path: '/opensearch-cluster',
       name: 'opensearch-cluster',
       component: () => import('../views/OpenSearchClusterView.vue'),
-      meta: { requiresAuth: true },
+      meta: { requiresAuth: true, feature: 'opensearch' },
     },
     {
       path: '/remote-host',
       name: 'remote-host',
       component: () => import('../views/RemoteHostView.vue'),
-      meta: { requiresAuth: true },
+      meta: { requiresAuth: true, feature: 'remote_servers' },
     },
     {
       path: '/remote-server',
       name: 'remote-server',
       component: () => import('../views/RemoteHostView.vue'),
-      meta: { requiresAuth: true },
+      meta: { requiresAuth: true, feature: 'remote_servers' },
     },
     {
       path: '/network-topology',
       name: 'network-topology',
       component: () => import('../views/TopologyView.vue'),
-      meta: { requiresAuth: true },
+      meta: { requiresAuth: true, feature: 'network_topology' },
     },
     {
       path: '/security/vaultwarden',
       name: 'vaultwarden',
       component: () => import('../views/VaultwardenView.vue'),
-      meta: { requiresAuth: true },
+      meta: { requiresAuth: true, feature: 'security' },
     },
     {
       path: '/vaultwarden',
@@ -55,7 +55,7 @@ const router = createRouter({
       path: '/infrastructure/containers',
       name: 'container-management',
       component: () => import('../views/ContainerManagementView.vue'),
-      meta: { requiresAuth: true },
+      meta: { requiresAuth: true, feature: 'infrastructure' },
     },
     {
       path: '/containers',
@@ -80,16 +80,19 @@ const router = createRouter({
           path: '',
           name: 'dashboard',
           component: () => import('../views/DashboardView.vue'),
+          meta: { requiresAuth: true, feature: 'dashboard' },
         },
         {
           path: 'connections',
           name: 'connections',
           component: () => import('../views/ConnectionsView.vue'),
+          meta: { requiresAuth: true, feature: 'connections' },
         },
         {
           path: 'inventory-server',
           name: 'inventory-server',
           component: () => import('../views/VmInventoryView.vue'),
+          meta: { requiresAuth: true, feature: 'connections' },
         },
         {
           path: 'inventory',
@@ -99,16 +102,19 @@ const router = createRouter({
           path: 'prometheus-config',
           name: 'prometheus-config',
           component: () => import('../views/PrometheusConfigView.vue'),
+          meta: { requiresAuth: true, feature: 'prometheus_config' },
         },
         {
           path: 'dataprepper-config',
           name: 'dataprepper-config',
           component: () => import('../views/DataPrepperConfigView.vue'),
+          meta: { requiresAuth: true, feature: 'dataprepper_config' },
         },
         {
           path: 'opentelemetry-config',
           name: 'opentelemetry-config',
           component: () => import('../views/OpenTelemetryConfigView.vue'),
+          meta: { requiresAuth: true, feature: 'opentelemetry_config' },
         },
         {
           path: 'otel-config',
@@ -118,26 +124,31 @@ const router = createRouter({
           path: 'backup',
           name: 'backup',
           component: () => import('../views/BackupView.vue'),
+          meta: { requiresAuth: true, feature: 'backup' },
         },
         {
           path: 'snmp',
           name: 'snmp',
           component: () => import('../views/SnmpView.vue'),
+          meta: { requiresAuth: true, feature: 'snmp' },
         },
         {
           path: 'grok-debugger',
           name: 'grok-debugger',
           component: () => import('../views/GrokDebuggerView.vue'),
+          meta: { requiresAuth: true, feature: 'grok_debugger' },
         },
         {
           path: 'slideshow',
           name: 'slideshow',
           component: () => import('../views/SlideShowView.vue'),
+          meta: { requiresAuth: true, feature: 'slideshow' },
         },
         {
           path: 'kiosk/:id?',
           name: 'kiosk',
           component: () => import('../views/SlideShowView.vue'),
+          meta: { requiresAuth: true, feature: 'slideshow' },
         },
         {
           path: 'tools',
@@ -151,6 +162,7 @@ const router = createRouter({
           path: 'reports',
           name: 'reports',
           component: () => import('../views/ReportsView.vue'),
+          meta: { requiresAuth: true, feature: 'reports' },
         },
         {
           path: 'reports/visual',
@@ -160,6 +172,7 @@ const router = createRouter({
           path: 'reports/raw',
           name: 'raw-reports',
           component: () => import('../views/RawReportsView.vue'),
+          meta: { requiresAuth: true, feature: 'reports' },
         },
         {
           path: 'report',
@@ -169,11 +182,13 @@ const router = createRouter({
           path: 'settings',
           name: 'settings',
           component: () => import('../views/SettingsView.vue'),
+          meta: { requiresAuth: true, feature: 'settings' },
         },
         {
           path: 'status-pages',
           name: 'status-pages',
           component: () => import('../views/StatusPagesView.vue'),
+          meta: { requiresAuth: true, feature: 'status_pages' },
         },
         {
           path: 'status-page',
@@ -255,6 +270,32 @@ router.beforeEach(async (to, from, next) => {
   if (to.meta.requiresAuth) {
     if (!authStore.isAuthenticated) {
       return next({ name: 'login', query: { redirect: to.fullPath } });
+    }
+
+    // RBAC Feature Permission Enforcement
+    if (to.meta.feature && typeof to.meta.feature === 'string') {
+      const action = (to.meta.action as 'read' | 'manage') || 'read';
+      if (!authStore.can(to.meta.feature, action)) {
+        // User lacks permission for this route: avoid blank screen and redirect safely
+        if (to.meta.feature !== 'dashboard' && authStore.can('dashboard', 'read')) {
+          return next({ path: '/' });
+        }
+        const accessibleRoutes = [
+          { path: '/connections', feature: 'connections' },
+          { path: '/infrastructure/containers', feature: 'infrastructure' },
+          { path: '/remote-server', feature: 'remote_servers' },
+          { path: '/network-topology', feature: 'network_topology' },
+          { path: '/status-pages', feature: 'status_pages' },
+          { path: '/slideshow', feature: 'slideshow' },
+          { path: '/snmp', feature: 'snmp' },
+          { path: '/reports', feature: 'reports' },
+        ];
+        const fallback = accessibleRoutes.find((r) => authStore.can(r.feature, 'read'));
+        if (fallback && to.path !== fallback.path) {
+          return next({ path: fallback.path });
+        }
+        return next({ name: 'not-found' });
+      }
     }
   }
 

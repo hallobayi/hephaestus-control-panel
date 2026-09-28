@@ -677,6 +677,7 @@ onUnmounted(() => {
             <!-- Report Sub-Menu Items -->
             <div v-show="isReportsOpen" class="pl-4 pr-1 py-1 space-y-1 border-l border-slate-200 dark:border-[#1b2234] ml-5 my-0.5">
               <router-link
+                v-if="authStore.can('reports', 'read')"
                 to="/reports"
                 :class="[
                   route.path === '/reports' || route.path === '/reports/visual'
@@ -689,6 +690,7 @@ onUnmounted(() => {
               </router-link>
 
               <router-link
+                v-if="authStore.can('reports', 'read')"
                 to="/reports/raw"
                 :class="[
                   route.path === '/reports/raw'

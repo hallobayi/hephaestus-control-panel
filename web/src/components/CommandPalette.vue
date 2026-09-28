@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue';
 import { useRouter } from 'vue-router';
+import { useAuthStore } from '../stores/auth';
 import { 
   Terminal, 
   Network, 
@@ -16,32 +17,47 @@ import {
   Sliders,
   ExternalLink,
   Link2,
+  Boxes,
+  Shield,
 } from 'lucide-vue-next';
 
 const isOpen = ref(false);
 const searchQuery = ref('');
 const router = useRouter();
+const authStore = useAuthStore();
 
 const items = [
-  { name: 'Overview', icon: Activity, route: '/' },
-  { name: 'Connections', icon: Link2, route: '/connections' },
-  { name: 'Inventory Server', icon: Server, route: '/inventory-server' },
-  { name: 'Remote Server', icon: Terminal, route: '/remote-server', newTab: true },
-  { name: 'Network Topology', icon: Network, route: '/network-topology', newTab: true },
-  { name: 'Data Prepper Pipelines', icon: Sliders, route: '/dataprepper-config' },
-  { name: 'Prometheus Config', icon: Sliders, route: '/prometheus-config' },
-  { name: 'SNMP Browser', icon: Radio, route: '/snmp' },
-  { name: 'Grok Debugger', icon: ListTree, route: '/grok-debugger' },
-  { name: 'Backup Manager', icon: Database, route: '/backup' },
-  { name: 'Status Pages', icon: Activity, route: '/status-pages' },
-  { name: 'OpenSearch Cluster', icon: Search, route: '/opensearch-cluster', newTab: true },
-  { name: 'Slide Show', icon: Activity, route: '/slideshow' },
-  { name: 'System Settings', icon: Settings, route: '/settings' },
+  { name: 'Overview', icon: Activity, route: '/', feature: 'dashboard' },
+  { name: 'Connections', icon: Link2, route: '/connections', feature: 'connections' },
+  { name: 'Inventory Server', icon: Server, route: '/inventory-server', feature: 'connections' },
+  { name: 'Remote Server', icon: Terminal, route: '/remote-server', newTab: true, feature: 'remote_servers' },
+  { name: 'Management Containers', icon: Boxes, route: '/infrastructure/containers', newTab: true, feature: 'infrastructure' },
+  { name: 'Network Topology', icon: Network, route: '/network-topology', newTab: true, feature: 'network_topology' },
+  { name: 'Data Prepper Pipelines', icon: Sliders, route: '/dataprepper-config', feature: 'dataprepper_config' },
+  { name: 'Prometheus Config', icon: Sliders, route: '/prometheus-config', feature: 'prometheus_config' },
+  { name: 'OpenTelemetry Config', icon: Radio, route: '/opentelemetry-config', feature: 'opentelemetry_config' },
+  { name: 'SNMP Browser', icon: Radio, route: '/snmp', feature: 'snmp' },
+  { name: 'Grok Debugger', icon: ListTree, route: '/grok-debugger', feature: 'grok_debugger' },
+  { name: 'Backup Manager', icon: Database, route: '/backup', feature: 'backup' },
+  { name: 'Vaultwarden', icon: Shield, route: '/security/vaultwarden', newTab: true, feature: 'security' },
+  { name: 'Status Pages', icon: Activity, route: '/status-pages', feature: 'status_pages' },
+  { name: 'OpenSearch Cluster', icon: Search, route: '/opensearch-cluster', newTab: true, feature: 'opensearch' },
+  { name: 'Slide Show', icon: Activity, route: '/slideshow', feature: 'slideshow' },
+  { name: 'Visual Reports', icon: FileText, route: '/reports', feature: 'reports' },
+  { name: 'Raw Data Report', icon: FileText, route: '/reports/raw', feature: 'reports' },
+  { name: 'System Settings', icon: Settings, route: '/settings', feature: 'settings' },
 ];
 
 const filteredItems = computed(() => {
-  if (!searchQuery.value) return items;
-  return items.filter(item => 
+  const allowed = items.filter(item => {
+    if (item.feature === 'settings') {
+      return authStore.can('settings', 'read') || authStore.user?.role?.toUpperCase() === 'ADMIN';
+    }
+    return authStore.can(item.feature, 'read');
+  });
+
+  if (!searchQuery.value) return allowed;
+  return allowed.filter(item => 
     item.name.toLowerCase().includes(searchQuery.value.toLowerCase())
   );
 });
